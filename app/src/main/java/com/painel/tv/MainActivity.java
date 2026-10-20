@@ -74,8 +74,6 @@ public class MainActivity extends Activity {
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        
-        // Deixa a escala neutra (100%) para o Power BI calcular o tamanho real da tela da TV
         webView.setInitialScale(100);
 
         WebSettings settings = webView.getSettings();
@@ -91,8 +89,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                // Dispara o clique automático no botão "Ajustar à página" do Power BI
-                forcarFitToPageAutomatico(view);
+                forcarFitToPageEremoverBarras(view);
             }
 
             @Override
@@ -119,11 +116,10 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Script inteligente que clica no botão "Ajustar à página" e esconde as barras de rodapé
-    private void forcarFitToPageAutomatico(WebView view) {
+    // Clica em ajustar e destrói qualquer vestígio de barra inferior/rodapé do Power BI
+    private void forcarFitToPageEremoverBarras(WebView view) {
         String js = "javascript:(function() {" +
                 "  function executarAjuste() {" +
-                "    /* Procura e clica automaticamente no botão de Ajustar à Página do Power BI */" +
                 "    var botoes = document.querySelectorAll('button');" +
                 "    for (var i = 0; i < botoes.length; i++) {" +
                 "      var titulo = botoes[i].getAttribute('title') || '';" +
@@ -134,20 +130,20 @@ public class MainActivity extends Activity {
                 "      }" +
                 "    }" +
                 "  }" +
-                "  /* Tenta ajustar logo aos 2 segundos e reforça aos 4 segundos para garantir */" +
                 "  setTimeout(executarAjuste, 2000);" +
                 "  setTimeout(executarAjuste, 4000);" +
                 "  " +
-                "  /* Esconde a barra cinza de rodapé do Power BI e margens */" +
+                "  /* Remove a barra inferior, rodapés, faixa de páginas e margens */" +
                 "  var css = '" +
                 "    ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }" +
                 "    html, body { margin: 0 !important; padding: 0 !important; overflow: hidden !important; background-color: #141923 !important; width: 100vw !important; height: 100vh !important; }" +
-                "    .logoBarWrapper, .logoBar, .zoomBar, .pbi-footer, footer, div[class*=\"logoBar\"], div[class*=\"footer\"] { display: none !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; }" +
+                "    .logoBarWrapper, .logoBar, .zoomBar, .pbi-footer, footer, div[class*=\"logoBar\"], div[class*=\"footer\"], .report-navigation-outer, .pbi-side-pane, nav { display: none !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }" +
+                "    .reportContainer, .embedContainer, .pbi-absolute-container { height: 100vh !important; max-height: 100vh !important; bottom: 0 !important; }" +
                 "  ';" +
-                "  var style = document.getElementById('estilo-autofit-tv');" +
+                "  var style = document.getElementById('estilo-sem-barra-inferior');" +
                 "  if (!style) {" +
                 "    style = document.createElement('style');" +
-                "    style.id = 'estilo-autofit-tv';" +
+                "    style.id = 'estilo-sem-barra-inferior';" +
                 "    style.innerHTML = css;" +
                 "    document.head.appendChild(style);" +
                 "  }" +
