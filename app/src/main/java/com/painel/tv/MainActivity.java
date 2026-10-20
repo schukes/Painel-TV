@@ -15,7 +15,7 @@ import android.webkit.WebViewClient;
 public class MainActivity extends Activity {
 
     // COLE SEU LINK DO POWER BI ENTRE AS ASPAS ABAIXO:
-    private static final String POWER_BI_URL = "COLE_SEU_LINK_DO_POWER_BI_AQUI";
+    private static final String POWER_BI_URL = "https://app.powerbi.com/view?r=eyJrIjoiZjQ5N2M4NWQtNjEzNC00ZGQwLThhMjctNjhiYWY4ZGQ4MjhkIiwidCI6IjkxZGMyNjczLWMyMTYtNDQ0Yi04ZGRkLWJjNmE0YjkwNTRhYiJ9";
     
     private WebView webView;
 
