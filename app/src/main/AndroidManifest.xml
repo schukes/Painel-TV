@@ -13,6 +13,8 @@
 
     <application
         android:label="Painel Power BI"
+        android:icon="@drawable/visao"
+        android:banner="@drawable/visao"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
