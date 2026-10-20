@@ -2,12 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           package="com.painel.tv">
 
-    <!-- Permissões de Internet e Inicialização no Boot -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Declara que o app funciona em TVs sem tela de toque -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
@@ -18,10 +16,9 @@
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
+        <!-- Tela de Configurações (Abre primeiro para você digitar os links) -->
         <activity
-            android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:screenOrientation="landscape"
+            android:name=".SettingsActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -30,7 +27,14 @@
             </intent-filter>
         </activity>
 
-        <!-- Gatilho que escuta a TV ligando na tomada -->
+        <!-- Tela do Painel WebView -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="landscape"
+            android:exported="true" />
+
+        <!-- Gatilho de Autostart na Tomada -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"

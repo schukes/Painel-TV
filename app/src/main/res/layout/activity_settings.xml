@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="#141923"
+              android:orientation="vertical"
+              android:padding="32dp"
+              android:focusable="true">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Configurações do Painel TV"
+        android:textColor="#FFFFFF"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="24dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Links do Power BI (um por linha ou separados por vírgula):"
+        android:textColor="#00C853"
+        android:textSize="14sp"
+        android:layout_marginBottom="8dp"/>
+
+    <EditText
+        android:id="@+id/etLinks"
+        android:layout_width="match_parent"
+        android:layout_height="100dp"
+        android:background="#1F2937"
+        android:textColor="#FFFFFF"
+        android:padding="12px"
+        android:gravity="top"
+        android:hint="Cole seus links do Power BI aqui..."
+        android:textColorHint="#9CA3AF"
+        android:textSize="14sp"
+        android:layout_marginBottom="16dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Tempo de exibição de cada painel na Playlist (em segundos):"
+        android:textColor="#00C853"
+        android:textSize="14sp"
+        android:layout_marginBottom="8dp"/>
+
+    <EditText
+        android:id="@+id/etTempo"
+        android:layout_width="200dp"
+        android:layout_height="48dp"
+        android:background="#1F2937"
+        android:textColor="#FFFFFF"
+        android:padding="12px"
+        android:inputType="number"
+        android:text="30"
+        android:textSize="16sp"
+        android:layout_marginBottom="24dp"/>
+
+    <Button
+        android:id="@+id/btnSalvar"
+        android:layout_width="250dp"
+        android:layout_height="54dp"
+        android:backgroundTint="#00C853"
+        android:text="Salvar e Iniciar Painel"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold"/>
+
+</LinearLayout>
