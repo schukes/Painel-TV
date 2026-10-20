@@ -25,9 +25,6 @@ public class MainActivity extends Activity {
     private int currentIndex = 0;
     private long intervaloMs = 30000;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    
-    // Aumentado para 100 para ocupar a tela inteira sem encolher
-    private static final int ESCALA_TV = 100;
 
     private final Runnable playlistRunnable = new Runnable() {
         @Override
@@ -77,7 +74,9 @@ public class MainActivity extends Activity {
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        webView.setInitialScale(ESCALA_TV);
+        
+        // Deixa a escala neutra (100%) para o Power BI calcular o tamanho real da tela da TV
+        webView.setInitialScale(100);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -92,7 +91,8 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                aplicarEstiloTelaCheia(view);
+                // Dispara o clique automático no botão "Ajustar à página" do Power BI
+                forcarFitToPageAutomatico(view);
             }
 
             @Override
@@ -119,19 +119,35 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Força o Power BI a esticar ocupando 100% da largura e altura da TV
-    private void aplicarEstiloTelaCheia(WebView view) {
+    // Script inteligente que clica no botão "Ajustar à página" e esconde as barras de rodapé
+    private void forcarFitToPageAutomatico(WebView view) {
         String js = "javascript:(function() {" +
+                "  function executarAjuste() {" +
+                "    /* Procura e clica automaticamente no botão de Ajustar à Página do Power BI */" +
+                "    var botoes = document.querySelectorAll('button');" +
+                "    for (var i = 0; i < botoes.length; i++) {" +
+                "      var titulo = botoes[i].getAttribute('title') || '';" +
+                "      var aria = botoes[i].getAttribute('aria-label') || '';" +
+                "      if (titulo.indexOf('Ajustar') !== -1 || titulo.indexOf('Fit') !== -1 ||" +
+                "          aria.indexOf('Ajustar') !== -1 || aria.indexOf('Fit') !== -1) {" +
+                "        botoes[i].click();" +
+                "      }" +
+                "    }" +
+                "  }" +
+                "  /* Tenta ajustar logo aos 2 segundos e reforça aos 4 segundos para garantir */" +
+                "  setTimeout(executarAjuste, 2000);" +
+                "  setTimeout(executarAjuste, 4000);" +
+                "  " +
+                "  /* Esconde a barra cinza de rodapé do Power BI e margens */" +
                 "  var css = '" +
                 "    ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }" +
                 "    html, body { margin: 0 !important; padding: 0 !important; overflow: hidden !important; background-color: #141923 !important; width: 100vw !important; height: 100vh !important; }" +
-                "    .logoBarWrapper, .logoBar, .zoomBar, div[class*=\"logoBar\"], div[class*=\"zoom\"], footer { display: none !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; }" +
-                "    .reportContainer, .embedContainer, .pbi-absolute-container, svg { width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; left: 0 !important; top: 0 !important; }" +
+                "    .logoBarWrapper, .logoBar, .zoomBar, .pbi-footer, footer, div[class*=\"logoBar\"], div[class*=\"footer\"] { display: none !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; }" +
                 "  ';" +
-                "  var style = document.getElementById('estilo-playlist-tv');" +
+                "  var style = document.getElementById('estilo-autofit-tv');" +
                 "  if (!style) {" +
                 "    style = document.createElement('style');" +
-                "    style.id = 'estilo-playlist-tv';" +
+                "    style.id = 'estilo-autofit-tv';" +
                 "    style.innerHTML = css;" +
                 "    document.head.appendChild(style);" +
                 "  }" +
@@ -161,6 +177,11 @@ public class MainActivity extends Activity {
         if (hasFocus) {
             ocultarBarrasSistema();
         }
+    }
+
+    @Override
+    public void onBackPressed() {
+        // Bloqueia botão Voltar
     }
 
     @Override
