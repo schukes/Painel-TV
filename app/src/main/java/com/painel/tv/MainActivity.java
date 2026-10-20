@@ -89,7 +89,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                forcarFitToPageEremoverBarras(view);
+                removerBarraInferiorTotal(view);
             }
 
             @Override
@@ -116,8 +116,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Clica em ajustar e destrói qualquer vestígio de barra inferior/rodapé do Power BI
-    private void forcarFitToPageEremoverBarras(WebView view) {
+    // Script cirúrgico para ocultar a barra de navegação/rodapé do Power BI e expandir a tela
+    private void removerBarraInferiorTotal(WebView view) {
         String js = "javascript:(function() {" +
                 "  function executarAjuste() {" +
                 "    var botoes = document.querySelectorAll('button');" +
@@ -130,20 +130,20 @@ public class MainActivity extends Activity {
                 "      }" +
                 "    }" +
                 "  }" +
-                "  setTimeout(executarAjuste, 2000);" +
-                "  setTimeout(executarAjuste, 4000);" +
+                "  setTimeout(executarAjuste, 1500);" +
+                "  setTimeout(executarAjuste, 3500);" +
                 "  " +
-                "  /* Remove a barra inferior, rodapés, faixa de páginas e margens */" +
+                "  /* Destrói a barra inferior branca e expande o relatório para 100vh */" +
                 "  var css = '" +
                 "    ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }" +
                 "    html, body { margin: 0 !important; padding: 0 !important; overflow: hidden !important; background-color: #141923 !important; width: 100vw !important; height: 100vh !important; }" +
-                "    .logoBarWrapper, .logoBar, .zoomBar, .pbi-footer, footer, div[class*=\"logoBar\"], div[class*=\"footer\"], .report-navigation-outer, .pbi-side-pane, nav { display: none !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }" +
-                "    .reportContainer, .embedContainer, .pbi-absolute-container { height: 100vh !important; max-height: 100vh !important; bottom: 0 !important; }" +
+                "    .logoBarWrapper, .logoBar, .zoomBar, .pbi-footer, footer, div[class*=\"logoBar\"], div[class*=\"footer\"], .report-navigation-outer, .pbi-side-pane, nav, .footer, .report-actions-container { display: none !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }" +
+                "    .reportContainer, .embedContainer, .pbi-absolute-container, .visualContainerHost { height: 100vh !important; max-height: 100vh !important; bottom: 0 !important; top: 0 !important; }" +
                 "  ';" +
-                "  var style = document.getElementById('estilo-sem-barra-inferior');" +
+                "  var style = document.getElementById('estilo-mata-barra');" +
                 "  if (!style) {" +
                 "    style = document.createElement('style');" +
-                "    style.id = 'estilo-sem-barra-inferior';" +
+                "    style.id = 'estilo-mata-barra';" +
                 "    style.innerHTML = css;" +
                 "    document.head.appendChild(style);" +
                 "  }" +
