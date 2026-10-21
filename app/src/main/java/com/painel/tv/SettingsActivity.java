@@ -49,9 +49,15 @@ public class SettingsActivity extends Activity {
     private static final int TEMPO_MIN = 10;
     private static final int TEMPO_MAX = 3600;
 
+    // Delay de carregamento (segundos que o painel atual fica congelado após o próximo carregar)
+    private static final int DELAY_PADRAO = 10;
+    private static final int DELAY_MIN = 0;
+    private static final int DELAY_MAX = 60;
+
     private ScrollView scrollView;
     private EditText edLinks;
     private EditText edTempo;
+    private EditText edDelay;
     private EditText edUsuario;
     private EditText edSenha;
     private TextView txtStatusPermissao;
@@ -107,6 +113,19 @@ public class SettingsActivity extends Activity {
                 1
         );
         raiz.addView(edTempo);
+
+        // ---- 2.1 Campo do delay de carregamento ----
+        raiz.addView(criarTexto(
+                "Delay de carregamento (segundos, 0 a " + DELAY_MAX + "):", 16, Color.LTGRAY));
+        raiz.addView(criarTexto(
+                "Tempo que o painel atual fica congelado, depois que o próximo termina de carregar, "
+                + "para os gráficos aparecerem antes da troca.", 13, Color.GRAY));
+        edDelay = criarCampoTexto(
+                String.valueOf(prefs.getInt("delay", DELAY_PADRAO)),
+                InputType.TYPE_CLASS_NUMBER,
+                1
+        );
+        raiz.addView(edDelay);
 
         // ---- 3. Campos de Login (Opcional para Links Privados) ----
         raiz.addView(criarTexto("Login do Power BI / Microsoft 365 (para links privados):", 18, Color.parseColor("#7FD1FF")));
@@ -212,6 +231,7 @@ public class SettingsActivity extends Activity {
         View[] ordem = new View[]{
                 edLinks,
                 edTempo,
+                edDelay,
                 edUsuario,
                 edSenha,
                 btnSalvar,
@@ -417,6 +437,14 @@ public class SettingsActivity extends Activity {
         }
         tempo = Math.max(TEMPO_MIN, Math.min(TEMPO_MAX, tempo));
 
+        int delay;
+        try {
+            delay = Integer.parseInt(edDelay.getText().toString().trim());
+        } catch (NumberFormatException e) {
+            delay = DELAY_PADRAO;
+        }
+        delay = Math.max(DELAY_MIN, Math.min(DELAY_MAX, delay));
+
         if (!links.toLowerCase().contains("http")) {
             Toast.makeText(this, "Informe ao menos um link http:// ou https://", Toast.LENGTH_LONG).show();
             edLinks.requestFocus();
@@ -426,6 +454,7 @@ public class SettingsActivity extends Activity {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putString("links", links)
                 .putInt("tempo", tempo)
+                .putInt("delay", delay)
                 .putString("usuario", usuario)
                 .putString("senha", senha)
                 .apply();
@@ -658,6 +687,7 @@ public class SettingsActivity extends Activity {
 
                 String links = "";
                 String tempo = String.valueOf(TEMPO_PADRAO);
+                String delay = String.valueOf(DELAY_PADRAO);
                 String usuario = "";
                 String senha = "";
 
@@ -667,12 +697,14 @@ public class SettingsActivity extends Activity {
                     String valor = URLDecoder.decode(kv[1], "UTF-8");
                     if (kv[0].equals("links")) links = valor;
                     if (kv[0].equals("tempo")) tempo = valor;
+                    if (kv[0].equals("delay")) delay = valor;
                     if (kv[0].equals("usuario")) usuario = valor;
                     if (kv[0].equals("senha")) senha = valor;
                 }
 
                 final String linksFinal = links.trim();
                 final String tempoFinal = tempo.trim();
+                final String delayFinal = delay.trim();
                 final String usuarioFinal = usuario.trim();
                 final String senhaFinal = senha;
 
@@ -681,18 +713,21 @@ public class SettingsActivity extends Activity {
                     public void run() {
                         edLinks.setText(linksFinal);
                         edTempo.setText(tempoFinal);
+                        edDelay.setText(delayFinal);
                         edUsuario.setText(usuarioFinal);
                         edSenha.setText(senhaFinal);
                         salvarEIniciar();
                     }
                 });
 
-                html = montarPagina("Enviado! A TV vai fazer login e iniciar o painel.", linksFinal, tempoFinal, usuarioFinal, senhaFinal);
+                html = montarPagina("Enviado! A TV vai fazer login e iniciar o painel.",
+                        linksFinal, tempoFinal, delayFinal, usuarioFinal, senhaFinal);
             } else {
                 SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
                 html = montarPagina("",
                         p.getString("links", ""),
                         String.valueOf(p.getInt("tempo", TEMPO_PADRAO)),
+                        String.valueOf(p.getInt("delay", DELAY_PADRAO)),
                         p.getString("usuario", ""),
                         p.getString("senha", ""));
             }
@@ -708,7 +743,8 @@ public class SettingsActivity extends Activity {
             saida.flush();
         }
 
-        private String montarPagina(String mensagem, String links, String tempo, String usuario, String senha) {
+        private String montarPagina(String mensagem, String links, String tempo, String delay,
+                                    String usuario, String senha) {
             return "<!DOCTYPE html><html><head><meta charset='utf-8'>"
                     + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
                     + "<title>Painel TV</title></head>"
@@ -720,6 +756,8 @@ public class SettingsActivity extends Activity {
                     + "<textarea name='links' rows='6' style='width:100%;padding:8px'>" + escaparHtml(links) + "</textarea>"
                     + "<p>Tempo por painel (segundos):</p>"
                     + "<input name='tempo' type='number' style='width:100%;padding:8px' value='" + escaparHtml(tempo) + "'>"
+                    + "<p>Delay de carregamento (segundos, 0 a " + DELAY_MAX + "):</p>"
+                    + "<input name='delay' type='number' min='" + DELAY_MIN + "' max='" + DELAY_MAX + "' style='width:100%;padding:8px' value='" + escaparHtml(delay) + "'>"
                     + "<h3>Login Microsoft / Power BI (para links privados)</h3>"
                     + "<p>E-mail corporativo:</p>"
                     + "<input name='usuario' type='email' style='width:100%;padding:8px' value='" + escaparHtml(usuario) + "'>"

@@ -40,6 +40,13 @@ public class MainActivity extends Activity {
     private static final int MIN_INTERVAL_SECONDS = 10;
     private static final int MAX_INTERVAL_SECONDS = 3600;
 
+    // Delay de carregamento: tempo que o painel de trás espera, DEPOIS de carregar,
+    // para o Power BI desenhar os visuais antes de trocar com o painel da frente.
+    // Configurável na tela de configurações (chave "delay", em segundos).
+    private static final int DEFAULT_DELAY_SECONDS = 10;
+    private static final int MIN_DELAY_SECONDS = 0;
+    private static final int MAX_DELAY_SECONDS = 60;
+
     private static final int MAX_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 10000L;
 
@@ -48,9 +55,6 @@ public class MainActivity extends Activity {
 
     private static final int LARGURA_VIRTUAL = 1920;
 
-    // Tempo que o painel de trás espera, DEPOIS de carregar, para o Power BI desenhar os visuais
-    // antes de trocar com o painel da frente. Aumente se os gráficos ainda aparecerem incompletos.
-    private static final long RENDER_DELAY_MS = 10000L;
     // Se o próximo painel não terminar de carregar nesse tempo, desiste e mantém o atual na tela.
     private static final long PRELOAD_TIMEOUT_MS = 60000L;
 
@@ -70,6 +74,7 @@ public class MainActivity extends Activity {
     private int cssAttempts = 0;
 
     private long intervaloMs = DEFAULT_INTERVAL_SECONDS * 1000L;
+    private long renderDelayMs = DEFAULT_DELAY_SECONDS * 1000L;
     private long navigationId = 0L;
 
     private boolean activityDestroyed = false;
@@ -119,11 +124,15 @@ public class MainActivity extends Activity {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         String rawLinks = prefs.getString("links", "");
         int tempoSegundos = prefs.getInt("tempo", DEFAULT_INTERVAL_SECONDS);
+        int delaySegundos = prefs.getInt("delay", DEFAULT_DELAY_SECONDS);
         usuarioBi = prefs.getString("usuario", "");
         senhaBi = prefs.getString("senha", "");
 
         tempoSegundos = Math.max(MIN_INTERVAL_SECONDS, Math.min(MAX_INTERVAL_SECONDS, tempoSegundos));
         intervaloMs = tempoSegundos * 1000L;
+
+        delaySegundos = Math.max(MIN_DELAY_SECONDS, Math.min(MAX_DELAY_SECONDS, delaySegundos));
+        renderDelayMs = delaySegundos * 1000L;
 
         playlistLinks.clear();
         if (rawLinks != null && !rawLinks.trim().isEmpty()) {
@@ -276,7 +285,7 @@ public class MainActivity extends Activity {
                 CookieManager.getInstance().flush();
             }
 
-            // Página de trás terminou de carregar: prepara e espera o tempo de renderização
+            // Página de trás terminou de carregar: prepara e espera o delay de renderização
             if (view == webViewBack) {
                 aoTerminarCarregamentoDeTras(url);
                 return;
@@ -512,7 +521,7 @@ public class MainActivity extends Activity {
 
         // Começa a carregar o próximo um pouco antes do fim do intervalo, para que a troca
         // aconteça aproximadamente quando o tempo configurado acabar.
-        long espera = Math.max(1000L, intervaloMs - RENDER_DELAY_MS);
+        long espera = Math.max(1000L, intervaloMs - renderDelayMs);
         handler.postDelayed(playlistRunnable, espera);
     }
 
@@ -611,7 +620,7 @@ public class MainActivity extends Activity {
                 }
             }
         };
-        handler.postDelayed(swapRunnable, RENDER_DELAY_MS);
+        handler.postDelayed(swapRunnable, renderDelayMs);
     }
 
     /** Troca os papéis: o WebView de trás vira a frente (visível) e o antigo vai para trás. */
@@ -702,7 +711,7 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------------------------------
-    // AJUSTE VISUAL (viewport, CSS, "Ajustar à página") — agora recebe o WebView alvo
+    // AJUSTE VISUAL (viewport, CSS, "Ajustar à página") — recebe o WebView alvo
     // ------------------------------------------------------------------------------------------
 
     private void injetarViewportVirtual(WebView alvo) {
@@ -842,6 +851,7 @@ public class MainActivity extends Activity {
     private boolean processarTeclaControle(int tecla, KeyEvent event) {
         if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
 
+        // 1) Botão Voltar 3 vezes seguidas abre as configurações SEMPRE (mesmo em tela de login)
         if (tecla == KeyEvent.KEYCODE_BACK) {
             if (event.getRepeatCount() > 0) {
                 abrirConfiguracoes();
@@ -864,6 +874,7 @@ public class MainActivity extends Activity {
             return true;
         }
 
+        // Na tela de login da Microsoft, deixa as setas e o OK funcionarem dentro da página (MFA)
         if (emTelaDeLogin) {
             if (tecla == KeyEvent.KEYCODE_MENU || tecla == KeyEvent.KEYCODE_SETTINGS) {
                 abrirConfiguracoes();
@@ -872,6 +883,7 @@ public class MainActivity extends Activity {
             return false;
         }
 
+        // 2) Fora da tela de login (exibindo o painel): qualquer tecla abre as configurações
         if (tecla == KeyEvent.KEYCODE_DPAD_CENTER
                 || tecla == KeyEvent.KEYCODE_ENTER
                 || tecla == KeyEvent.KEYCODE_NUMPAD_ENTER
