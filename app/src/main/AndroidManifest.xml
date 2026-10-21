@@ -1,19 +1,14 @@
-
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           package="com.painel.tv">
 
-    <!-- Permite carregar os relatórios do Power BI -->
     <uses-permission android:name="android.permission.INTERNET" />
-
-    <!-- Permite receber o evento de inicialização do Android -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Compatibilidade com Android TV e TV Box -->
     <uses-feature
         android:name="android.software.leanback"
         android:required="false" />
-
     <uses-feature
         android:name="android.hardware.touchscreen"
         android:required="false" />
@@ -22,46 +17,35 @@
         android:label="Painel Power BI"
         android:icon="@drawable/visao"
         android:banner="@drawable/visao"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
-        <!-- Tela inicial: configurações do painel -->
         <activity
             android:name=".SettingsActivity"
             android:exported="true">
-
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
-
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
-
         </activity>
 
-        <!-- Tela de exibição dos relatórios Power BI -->
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="landscape"
             android:exported="true" />
 
-        <!-- Inicialização automática após o boot -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="true">
-
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-
         </receiver>
 
     </application>
-
 </manifest>
