@@ -1,4 +1,3 @@
-
 package com.painel.tv;
 
 import android.app.Activity;
@@ -31,7 +30,7 @@ public class MainActivity extends Activity {
     private static final int MAX_INTERVAL_SECONDS = 3600;
 
     private static final int MAX_RETRIES = 3;
-    private static final int MAX_CSS_ATTEMPTS = 6;
+    private static final int MAX_CSS_ATTEMPTS = 8; // Aumentado para garantir o ajuste após o carregamento dos dados
 
     private static final long RETRY_DELAY_MS = 10000L;
     private static final long CSS_DELAY_MS = 1500L;
@@ -50,8 +49,7 @@ public class MainActivity extends Activity {
     private boolean activityDestroyed = false;
     private boolean pageLoaded = false;
 
-    private final Handler handler =
-            new Handler(Looper.getMainLooper());
+    private final Handler handler = new Handler(Looper.getMainLooper());
 
     private Runnable playlistRunnable;
     private Runnable retryRunnable;
@@ -88,21 +86,12 @@ public class MainActivity extends Activity {
     }
 
     private void carregarConfiguracoes() {
-        SharedPreferences prefs =
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
 
         String rawLinks = prefs.getString("links", "");
 
-        int tempoSegundos = prefs.getInt(
-                "tempo",
-                DEFAULT_INTERVAL_SECONDS
-        );
-
-        tempoSegundos = Math.max(
-                MIN_INTERVAL_SECONDS,
-                Math.min(MAX_INTERVAL_SECONDS, tempoSegundos)
-        );
-
+        int tempoSegundos = prefs.getInt("tempo", DEFAULT_INTERVAL_SECONDS);
+        tempoSegundos = Math.max(MIN_INTERVAL_SECONDS, Math.min(MAX_INTERVAL_SECONDS, tempoSegundos));
         intervaloMs = tempoSegundos * 1000L;
 
         playlistLinks.clear();
@@ -112,16 +101,10 @@ public class MainActivity extends Activity {
 
             for (String link : links) {
                 String limpo = link.trim();
+                if (limpo.isEmpty()) continue;
 
-                if (limpo.isEmpty()) {
-                    continue;
-                }
-
-                // Aceita apenas URLs HTTP e HTTPS.
                 String urlLower = limpo.toLowerCase(Locale.ROOT);
-
-                if (urlLower.startsWith("https://")
-                        || urlLower.startsWith("http://")) {
+                if (urlLower.startsWith("https://") || urlLower.startsWith("http://")) {
                     playlistLinks.add(limpo);
                 }
             }
@@ -131,49 +114,42 @@ public class MainActivity extends Activity {
     private void criarWebView() {
         webView = new WebView(this);
 
-        webView.setBackgroundColor(
-                Color.parseColor("#141923")
-        );
-
+        webView.setBackgroundColor(Color.parseColor("#141923"));
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
+        
+        // Define escala 57% como base segura para a resolução lógica 960x540 da Google TV
+        webView.setInitialScale(57);
 
         WebSettings settings = webView.getSettings();
 
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
-
-        // Usa o User-Agent padrão do WebView.
-        // Só altere se houver um problema comprovado de compatibilidade.
+        
+        // Simula navegador Desktop Full HD para evitar layout mobile/cortado
+        settings.setUserAgentString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
 
         webView.setWebViewClient(new WebViewClient() {
 
             @Override
-            public void onPageStarted(
-                    WebView view,
-                    String url,
-                    android.graphics.Bitmap favicon
-            ) {
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
-
                 pageLoaded = false;
                 cancelarTarefasDePagina();
             }
 
             @Override
-            public void onPageFinished(
-                    WebView view,
-                    String url
-            ) {
+            public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
 
                 if (activityDestroyed || view != webView) {
@@ -188,35 +164,19 @@ public class MainActivity extends Activity {
             }
 
             @Override
-            public void onReceivedError(
-                    WebView view,
-                    WebResourceRequest request,
-                    WebResourceError error
-            ) {
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                        && request.isForMainFrame()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
                     tratarFalhaDeCarregamento();
                 }
             }
 
             @SuppressWarnings("deprecation")
             @Override
-            public void onReceivedError(
-                    WebView view,
-                    int errorCode,
-                    String description,
-                    String failingUrl
-            ) {
-                super.onReceivedError(
-                        view,
-                        errorCode,
-                        description,
-                        failingUrl
-                );
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                super.onReceivedError(view, errorCode, description, failingUrl);
 
-                // Compatibilidade com versões antigas do Android.
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
                     tratarFalhaDeCarregamento();
                 }
@@ -227,9 +187,7 @@ public class MainActivity extends Activity {
     }
 
     private void carregarLinkAtual() {
-        if (activityDestroyed
-                || webView == null
-                || playlistLinks.isEmpty()) {
+        if (activityDestroyed || webView == null || playlistLinks.isEmpty()) {
             return;
         }
 
@@ -244,16 +202,13 @@ public class MainActivity extends Activity {
 
         String url = playlistLinks.get(currentIndex);
 
-        // Adiciona o parâmetro sem duplicá-lo.
         if (!url.matches("(?i).*([?&])chromeless=.*")) {
-            url += (url.contains("?") ? "&" : "?")
-                    + "chromeless=true";
+            url += (url.contains("?") ? "&" : "?") + "chromeless=true";
         }
 
+        webView.setInitialScale(57);
         webView.loadUrl(url);
 
-        // O intervalo é contado a partir do início da navegação.
-        // A playlist não fica parada indefinidamente se uma página travar.
         playlistRunnable = new Runnable() {
             @Override
             public void run() {
@@ -262,9 +217,7 @@ public class MainActivity extends Activity {
                 }
 
                 if (!playlistLinks.isEmpty()) {
-                    currentIndex =
-                            (currentIndex + 1) % playlistLinks.size();
-
+                    currentIndex = (currentIndex + 1) % playlistLinks.size();
                     carregarLinkAtual();
                 }
             }
@@ -274,21 +227,11 @@ public class MainActivity extends Activity {
     }
 
     private void tratarFalhaDeCarregamento() {
-        if (activityDestroyed || pageLoaded || webView == null) {
-            return;
-        }
-
-        if (retryRunnable != null) {
-            return;
-        }
-
-        if (retryCount >= MAX_RETRIES) {
-            // A playlist continuará avançando normalmente.
+        if (activityDestroyed || pageLoaded || webView == null || retryRunnable != null || retryCount >= MAX_RETRIES) {
             return;
         }
 
         final long idDaFalha = navigationId;
-
         retryCount++;
 
         retryRunnable = new Runnable() {
@@ -296,18 +239,14 @@ public class MainActivity extends Activity {
             public void run() {
                 retryRunnable = null;
 
-                if (activityDestroyed
-                        || webView == null
-                        || idDaFalha != navigationId
-                        || pageLoaded) {
+                if (activityDestroyed || webView == null || idDaFalha != navigationId || pageLoaded) {
                     return;
                 }
 
                 String url = playlistLinks.get(currentIndex);
 
                 if (!url.matches("(?i).*([?&])chromeless=.*")) {
-                    url += (url.contains("?") ? "&" : "?")
-                            + "chromeless=true";
+                    url += (url.contains("?") ? "&" : "?") + "chromeless=true";
                 }
 
                 webView.loadUrl(url);
@@ -331,10 +270,7 @@ public class MainActivity extends Activity {
             public void run() {
                 cssRunnable = null;
 
-                if (activityDestroyed
-                        || webView == null
-                        || idDaPagina != navigationId
-                        || !pageLoaded) {
+                if (activityDestroyed || webView == null || idDaPagina != navigationId || !pageLoaded) {
                     return;
                 }
 
@@ -351,6 +287,7 @@ public class MainActivity extends Activity {
         handler.postDelayed(cssRunnable, CSS_DELAY_MS);
     }
 
+    // Remove qualquer barra inferior pela raiz e ajusta o tamanho do painel automaticamente
     private void aplicarAjusteVisual() {
         if (webView == null || activityDestroyed) {
             return;
@@ -358,63 +295,72 @@ public class MainActivity extends Activity {
 
         String js =
                 "(function() {" +
+                "  /* 1. CSS para remover barras de rolagem e rodapés conhecidos */" +
                 "  var css = `" +
-
                 "    html, body {" +
                 "      margin: 0 !important;" +
                 "      padding: 0 !important;" +
+                "      width: 100vw !important;" +
+                "      height: 100vh !important;" +
                 "      background: #141923 !important;" +
-                "      overflow-x: hidden !important;" +
+                "      overflow: hidden !important;" +
                 "    }" +
-
                 "    ::-webkit-scrollbar {" +
                 "      display: none !important;" +
                 "      width: 0 !important;" +
                 "      height: 0 !important;" +
                 "    }" +
-
-                "    .report-navigation-outer," +
-                "    .report-navigation," +
-                "    .report-navigation-wrapper," +
-                "    [class*='report-navigation']," +
-                "    [class*='pageNavigation']," +
-                "    [class*='zoomBar']," +
-                "    [class*='logoBar'] {" +
+                "    .logoBarWrapper, .logoBar, .pbi-footer, footer," +
+                "    .report-navigation-outer, .report-navigation, .report-navigation-wrapper," +
+                "    .exploration-footer, .explorationNavigationBar, .appBar, .notification-bar," +
+                "    [class*='logoBar'], [class*='zoomBar'], [class*='pageNavigation']," +
+                "    [class*='navigation-wrapper'], [class*='footer'], [class*='statusBar'] {" +
                 "      display: none !important;" +
+                "      height: 0 !important;" +
+                "      min-height: 0 !important;" +
+                "      max-height: 0 !important;" +
+                "      opacity: 0 !important;" +
                 "      visibility: hidden !important;" +
                 "      pointer-events: none !important;" +
                 "    }" +
-
                 "  `;" +
-
-                "  var style = document.getElementById(" +
-                "    'painel-tv-custom-style');" +
-
+                "  var style = document.getElementById('painel-tv-custom-style');" +
                 "  if (!style && document.head) {" +
                 "    style = document.createElement('style');" +
                 "    style.id = 'painel-tv-custom-style';" +
                 "    document.head.appendChild(style);" +
                 "  }" +
-
                 "  if (style) {" +
                 "    style.textContent = css;" +
                 "  }" +
 
-                "  var botoes = document.querySelectorAll('button');" +
-
-                "  for (var i = 0; i < botoes.length; i++) {" +
-                "    var titulo = botoes[i].getAttribute('title') || '';" +
-                "    var aria = botoes[i].getAttribute('aria-label') || '';" +
-                "    var texto = titulo + ' ' + aria;" +
-
-                "    if (/fit to page|fit to width|ajustar à página|" +
-                "ajustar a página|ajustar à largura|" +
-                "ajustar a largura/i.test(texto)) {" +
-                "      botoes[i].click();" +
-                "      break;" +
+                "  /* 2. Caçador de Barras: Procura a barra 'Voltar | KG Embalado' e 'Microsoft Power BI' pela posição na tela e oculta */" +
+                "  var todosElementos = document.querySelectorAll('div, footer, nav, section, header');" +
+                "  for (var i = 0; i < todosElementos.length; i++) {" +
+                "    var el = todosElementos[i];" +
+                "    var rect = el.getBoundingClientRect();" +
+                "    /* Se for uma faixa horizontal na parte de baixo da tela (altura entre 20px e 95px) */" +
+                "    if (rect.height > 20 && rect.height < 95 && rect.top > (window.innerHeight * 0.65) && rect.width > (window.innerWidth * 0.5)) {" +
+                "      var txt = (el.innerText || '').toLowerCase();" +
+                "      if (txt.indexOf('voltar') !== -1 || txt.indexOf('power bi') !== -1 || txt.indexOf('100%') !== -1 || txt.indexOf('50%') !== -1 || txt.indexOf('back') !== -1) {" +
+                "        el.style.setProperty('display', 'none', 'important');" +
+                "        el.style.setProperty('height', '0px', 'important');" +
+                "      }" +
                 "    }" +
                 "  }" +
 
+                "  /* 3. Força os containers principais a ocuparem 100% da altura liberada pelas barras */" +
+                "  var containers = document.querySelectorAll('.reportContainer, .embedContainer, .pbi-absolute-container, .visualContainerHost, .explorationContainer, #pvExplorationHost');" +
+                "  for (var j = 0; j < containers.length; j++) {" +
+                "    containers[j].style.setProperty('height', '100vh', 'important');" +
+                "    containers[j].style.setProperty('max-height', '100vh', 'important');" +
+                "    containers[j].style.setProperty('width', '100vw', 'important');" +
+                "    containers[j].style.setProperty('bottom', '0px', 'important');" +
+                "    containers[j].style.setProperty('top', '0px', 'important');" +
+                "  }" +
+
+                "  /* 4. Dispara um evento de redimensionamento para o Power BI recalcular o espaço total */" +
+                "  window.dispatchEvent(new Event('resize'));" +
                 "})();";
 
         webView.evaluateJavascript(js, null);
