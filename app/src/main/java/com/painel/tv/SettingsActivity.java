@@ -469,4 +469,226 @@ public class SettingsActivity extends Activity {
     private void atualizarTextoBotaoLauncher() {
         String novoTexto;
         if (isModoLauncherAtivo()) {
-            novo
+            novoTexto = "3. Modo Launcher: ATIVADO (Clique para Desativar e liberar o botão Home)";
+        } else {
+            novoTexto = "3. Modo Launcher: DESATIVADO (Clique para Ativar e iniciar junto com a TV)";
+        }
+        btnToggleLauncher.setTag(novoTexto);
+        if (btnToggleLauncher.hasFocus()) {
+            btnToggleLauncher.setText("▶  " + novoTexto);
+        } else {
+            btnToggleLauncher.setText("   " + novoTexto);
+        }
+    }
+
+    private void alternarModoLauncher() {
+        ComponentName cn = new ComponentName(this, getPackageName() + ".HomeLauncherAlias");
+        PackageManager pm = getPackageManager();
+
+        if (isModoLauncherAtivo()) {
+            pm.setComponentEnabledSetting(cn,
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP);
+            atualizarTextoBotaoLauncher();
+            Toast.makeText(this, "Modo Launcher DESATIVADO. O botão Home voltou ao normal da TV.", Toast.LENGTH_LONG).show();
+        } else {
+            pm.setComponentEnabledSetting(cn,
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                    PackageManager.DONT_KILL_APP);
+            atualizarTextoBotaoLauncher();
+
+            try {
+                Intent seletorHome = new Intent(Intent.ACTION_MAIN);
+                seletorHome.addCategory(Intent.CATEGORY_HOME);
+                seletorHome.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(seletorHome);
+                Toast.makeText(this, "Selecione 'Painel TV' como tela inicial!", Toast.LENGTH_LONG).show();
+            } catch (Exception e) {
+                Toast.makeText(this, "Modo Launcher ATIVADO! Aperte o botão HOME do controle e escolha o Painel TV.", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void abrirConfiguracoesDaTv() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_SETTINGS);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            Toast.makeText(this, "Não foi possível abrir as configurações da TV.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void sairParaMenuOriginalDaTv() {
+        PackageManager pm = getPackageManager();
+        Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+        homeIntent.addCategory(Intent.CATEGORY_HOME);
+
+        List<ResolveInfo> launchers = pm.queryIntentActivities(homeIntent, 0);
+        for (ResolveInfo info : launchers) {
+            String pkg = info.activityInfo.packageName;
+            if (!pkg.equals(getPackageName()) && !pkg.contains("settings")) {
+                Intent launch = new Intent(Intent.ACTION_MAIN);
+                launch.addCategory(Intent.CATEGORY_HOME);
+                launch.setComponent(new ComponentName(pkg, info.activityInfo.name));
+                launch.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try {
+                    startActivity(launch);
+                    finish();
+                    return;
+                } catch (Exception ignored) { }
+            }
+        }
+
+        Toast.makeText(this, "Desative a opção '3. Modo Launcher' acima e aperte o botão Home do controle.", Toast.LENGTH_LONG).show();
+    }
+
+    // ------------------------------------------------------------------
+    // AUXILIARES
+    // ------------------------------------------------------------------
+    private TextView criarTexto(String texto, int tamanhoSp, int cor) {
+        TextView tv = new TextView(this);
+        tv.setText(texto);
+        tv.setTextSize(tamanhoSp);
+        tv.setTextColor(cor);
+        tv.setPadding(0, 14, 0, 6);
+        tv.setFocusable(false);
+        return tv;
+    }
+
+    private String obterIp() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface ni = interfaces.nextElement();
+                Enumeration<InetAddress> enderecos = ni.getInetAddresses();
+                while (enderecos.hasMoreElements()) {
+                    InetAddress ip = enderecos.nextElement();
+                    if (!ip.isLoopbackAddress() && ip instanceof Inet4Address) {
+                        return ip.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+        return "IP-DA-TV";
+    }
+
+    private static String escaparHtml(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    }
+
+    // ------------------------------------------------------------------
+    // MINI SERVIDOR WEB (configurar pelo celular)
+    // ------------------------------------------------------------------
+    private class ServidorLocal extends Thread {
+        private ServerSocket serverSocket;
+        private volatile boolean rodando = true;
+
+        void parar() {
+            rodando = false;
+            try {
+                if (serverSocket != null) serverSocket.close();
+            } catch (IOException ignored) { }
+        }
+
+        @Override
+        public void run() {
+            try {
+                serverSocket = new ServerSocket(PORTA);
+                while (rodando) {
+                    Socket cliente = serverSocket.accept();
+                    try {
+                        atender(cliente);
+                    } catch (Exception ignored) { }
+                    try { cliente.close(); } catch (IOException ignored) { }
+                }
+            } catch (IOException ignored) { }
+        }
+
+        private void atender(Socket cliente) throws IOException {
+            cliente.setSoTimeout(5000);
+            BufferedReader entrada = new BufferedReader(
+                    new InputStreamReader(cliente.getInputStream(), "UTF-8"));
+
+            String requisicao = entrada.readLine();
+            if (requisicao == null) return;
+
+            int tamanhoCorpo = 0;
+            String linha;
+            while ((linha = entrada.readLine()) != null && !linha.isEmpty()) {
+                if (linha.toLowerCase().startsWith("content-length:")) {
+                    tamanhoCorpo = Integer.parseInt(linha.substring(15).trim());
+                }
+            }
+
+            String html;
+
+            if (requisicao.startsWith("POST")) {
+                char[] buffer = new char[tamanhoCorpo];
+                int lido = 0;
+                while (lido < tamanhoCorpo) {
+                    int n = entrada.read(buffer, lido, tamanhoCorpo - lido);
+                    if (n < 0) break;
+                    lido += n;
+                }
+                String corpo = new String(buffer, 0, lido);
+
+                String links = "";
+                String tempo = String.valueOf(TEMPO_PADRAO);
+                for (String par : corpo.split("&")) {
+                    String[] kv = par.split("=", 2);
+                    if (kv.length < 2) continue;
+                    String valor = URLDecoder.decode(kv[1], "UTF-8");
+                    if (kv[0].equals("links")) links = valor;
+                    if (kv[0].equals("tempo")) tempo = valor;
+                }
+
+                final String linksFinal = links.trim();
+                final String tempoFinal = tempo.trim();
+
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        edLinks.setText(linksFinal);
+                        edTempo.setText(tempoFinal);
+                        salvarEIniciar();
+                    }
+                });
+
+                html = montarPagina("Enviado! A TV vai iniciar o painel.", linksFinal, tempoFinal);
+            } else {
+                SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                html = montarPagina("",
+                        p.getString("links", ""),
+                        String.valueOf(p.getInt("tempo", TEMPO_PADRAO)));
+            }
+
+            byte[] bytes = html.getBytes("UTF-8");
+            OutputStream saida = cliente.getOutputStream();
+            String cabecalho = "HTTP/1.1 200 OK\r\n"
+                    + "Content-Type: text/html; charset=utf-8\r\n"
+                    + "Content-Length: " + bytes.length + "\r\n"
+                    + "Connection: close\r\n\r\n";
+            saida.write(cabecalho.getBytes("UTF-8"));
+            saida.write(bytes);
+            saida.flush();
+        }
+
+        private String montarPagina(String mensagem, String links, String tempo) {
+            return "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                    + "<title>Painel TV</title></head>"
+                    + "<body style='font-family:sans-serif;padding:16px'>"
+                    + "<h2>Painel TV - Power BI</h2>"
+                    + "<p style='color:green'>" + mensagem + "</p>"
+                    + "<form method='post' action='/salvar'>"
+                    + "<p>Links (um por linha):</p>"
+                    + "<textarea name='links' rows='8' style='width:100%'>" + escaparHtml(links) + "</textarea>"
+                    + "<p>Tempo por painel (segundos):</p>"
+                    + "<input name='tempo' type='number' value='" + escaparHtml(tempo) + "'>"
+                    + "<p><button type='submit' style='padding:12px 24px;font-size:18px'>"
+                    + "Salvar e iniciar</button></p>"
+                    + "</form></body></html>";
+        }
+    }
+}
