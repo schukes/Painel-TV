@@ -1,6 +1,7 @@
 package com.painel.tv;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -26,11 +27,17 @@ import java.util.Locale;
 /**
  * Painel TV - Power BI (modo quiosque)
  *
- * Mostra uma playlist de links públicos do Power BI em tela cheia,
+ * TELA DE EXIBIÇÃO: mostra uma playlist de links públicos do Power BI em tela cheia,
  * alternando entre eles a cada X segundos.
  *
- * CORREÇÃO PRINCIPAL desta versão:
- * O WebView agora renderiza a página num "viewport virtual" de 1920 px de largura
+ * FLUXO DO APP:
+ *  - Se NÃO existem links salvos (primeira vez) -> abre a SettingsActivity.
+ *  - Se existem links salvos -> abre direto o painel (esta tela).
+ *  - Apertando OK / Enter / Menu no controle remoto -> abre a SettingsActivity
+ *    para alterar links ou tempo.
+ *
+ * VIEWPORT VIRTUAL:
+ * O WebView renderiza a página num "monitor virtual" de 1920 px de largura
  * (igual a um monitor Full HD) e depois escala tudo para caber na TV.
  * Assim o Power BI se comporta como no navegador do computador e o relatório
  * aparece inteiro, sem cortes e sem cair no layout "mobile".
@@ -40,8 +47,9 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
     // CONSTANTES DE CONFIGURAÇÃO
     // ------------------------------------------------------------------
+
+    // Nome do arquivo de preferências (compartilhado com a SettingsActivity!)
     private static final String PREFS_NAME = "PainelPrefs";
-    private static final String DEFAULT_URL = "https://app.powerbi.com/";
 
     // Tempo de exibição de cada painel (em segundos)
     private static final int DEFAULT_INTERVAL_SECONDS = 30;
@@ -99,15 +107,21 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        configurarTela();
+        // Lê os links e o tempo salvos
         carregarConfiguracoes();
-        criarWebView();
 
-        // Se não houver nenhum link salvo, usa o link padrão
+        // PRIMEIRA ABERTURA (ou configuração apagada):
+        // não há links, então abre a tela de configurações e encerra esta tela.
+        // Depois que o usuário salvar, a SettingsActivity chama o painel de novo.
         if (playlistLinks.isEmpty()) {
-            playlistLinks.add(DEFAULT_URL);
+            startActivity(new Intent(this, SettingsActivity.class));
+            finish();
+            return;
         }
 
+        // Já configurado: monta a tela e abre direto o painel
+        configurarTela();
+        criarWebView();
         carregarLinkAtual();
     }
 
@@ -162,7 +176,7 @@ public class MainActivity extends Activity {
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
 
-        // --- ESCALA: o coração da correção ---
+        // --- ESCALA ---
         // Calculamos quanto precisamos "encolher" uma página de 1920 px
         // para ela ocupar exatamente a largura real da TV.
         // Exemplo: TV com 1920 px de largura -> escala 100%.
@@ -261,7 +275,6 @@ public class MainActivity extends Activity {
         cssAttempts = 0;
         fitClicado = false;
 
-        // Obs.: o parâmetro "chromeless=true" foi removido, pois não tem efeito em links "view?r="
         webView.loadUrl(playlistLinks.get(currentIndex));
 
         // Depois do tempo configurado, passa para o próximo link da playlist
@@ -456,6 +469,36 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
+    // ABRIR CONFIGURAÇÕES PELO CONTROLE REMOTO
+    // ------------------------------------------------------------------
+
+    /** Abre a tela de configurações e fecha o painel (para a playlist). */
+    private void abrirConfiguracoes() {
+        startActivity(new Intent(this, SettingsActivity.class));
+        finish();
+    }
+
+    /**
+     * Intercepta as teclas ANTES de chegarem ao WebView.
+     * (Se usássemos só onKeyDown, o WebView "engoliria" o clique do OK.)
+     *
+     * OK (DPAD_CENTER), Enter ou Menu -> abre as configurações.
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            int tecla = event.getKeyCode();
+            if (tecla == KeyEvent.KEYCODE_DPAD_CENTER
+                    || tecla == KeyEvent.KEYCODE_ENTER
+                    || tecla == KeyEvent.KEYCODE_MENU) {
+                abrirConfiguracoes();
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    // ------------------------------------------------------------------
     // MODO QUIOSQUE (barras do sistema e botão Voltar)
     // ------------------------------------------------------------------
 
@@ -477,13 +520,13 @@ public class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus && !activityDestroyed) ocultarBarrasSistema();
+        if (hasFocus && !activityDestroyed && webView != null) ocultarBarrasSistema();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (!activityDestroyed) ocultarBarrasSistema();
+        if (!activityDestroyed && webView != null) ocultarBarrasSistema();
     }
 
     // Libera tudo ao fechar o app, evitando vazamento de memória

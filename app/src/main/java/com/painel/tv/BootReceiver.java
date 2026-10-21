@@ -1,52 +1,33 @@
-
 package com.painel.tv;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.util.Log;
 
+/**
+ * Inicia o painel automaticamente quando a TV liga (boot concluído).
+ *
+ * Requisitos:
+ *  - Permissão RECEIVE_BOOT_COMPLETED no AndroidManifest;
+ *  - Permissão "Sobrepor a outros aplicativos" concedida (Android 10+ bloqueia
+ *    abrir telas em segundo plano sem ela);
+ *  - O app precisa ter sido aberto manualmente pelo menos uma vez após instalar.
+ */
 public class BootReceiver extends BroadcastReceiver {
-
-    private static final String TAG = "PainelTV";
-
-    private static final String ACTION_QUICKBOOT_POWERON =
-            "android.intent.action.QUICKBOOT_POWERON";
 
     @Override
     public void onReceive(Context context, Intent intent) {
+        String acao = intent.getAction();
 
-        if (intent == null || intent.getAction() == null) {
-            return;
-        }
+        // BOOT_COMPLETED: boot normal. QUICKBOOT_POWERON: "boot rápido" de alguns aparelhos.
+        if (Intent.ACTION_BOOT_COMPLETED.equals(acao)
+                || "android.intent.action.QUICKBOOT_POWERON".equals(acao)) {
 
-        String action = intent.getAction();
-
-        boolean inicializacaoNormal =
-                Intent.ACTION_BOOT_COMPLETED.equals(action);
-
-        boolean inicializacaoRapida =
-                ACTION_QUICKBOOT_POWERON.equals(action);
-
-        if (!inicializacaoNormal && !inicializacaoRapida) {
-            return;
-        }
-
-        try {
-            Intent painel = new Intent(context, MainActivity.class);
-
-            painel.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
-            );
-
-            context.startActivity(painel);
-
-            Log.i(TAG, "Solicitada abertura automática do painel.");
-
-        } catch (Exception e) {
-            Log.e(TAG, "Não foi possível abrir o painel após a inicialização.", e);
+            // A MainActivity decide sozinha: sem configuração abre as Configurações,
+            // com configuração abre direto o painel.
+            Intent abrir = new Intent(context, MainActivity.class);
+            abrir.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); // obrigatório fora de uma Activity
+            context.startActivity(abrir);
         }
     }
 }

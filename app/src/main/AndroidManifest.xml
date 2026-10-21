@@ -1,49 +1,59 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-          package="com.painel.tv">
+<!--
+     Manifest do Painel TV.
+     Obs.: se o seu projeto usa "namespace" no build.gradle (AGP 7+), não coloque o atributo
+     package aqui. Se usa o modelo antigo, adicione package="com.painel.tv" na tag <manifest>.
+     Mantenha o android:icon / android:label / android:theme que o seu projeto já tem.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Acesso à internet (Power BI) e ao servidor local de configuração -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Permite receber o aviso "TV terminou de ligar" para abrir o app sozinho -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Permite abrir o app em segundo plano no boot (Android 10+) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <uses-feature
-        android:name="android.software.leanback"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.touchscreen"
-        android:required="false" />
+    <!-- Declara que o app é para TV, mas sem exigir (funciona em aparelhos comuns também) -->
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
-        android:label="Painel Power BI"
-        android:icon="@drawable/visao"
-        android:banner="@drawable/visao"
-        android:usesCleartextTraffic="true"
-        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+        android:allowBackup="true"
+        android:label="Painel TV"
+        android:usesCleartextTraffic="false">
+        <!-- Para o ícone aparecer bonito na lista de apps do Google TV, adicione:
+             android:banner="@drawable/banner"   (imagem 320x180) -->
 
+        <!-- Tela do painel: é a que abre ao iniciar -->
         <activity
-            android:name=".SettingsActivity"
-            android:exported="true">
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
+                <!-- Aparece no menu de apps de celulares/tablets -->
                 <category android:name="android.intent.category.LAUNCHER" />
+                <!-- Aparece no menu de apps do Google TV / Android TV -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
 
+        <!-- Tela de configurações: só é aberta pelo próprio app -->
         <activity
-            android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:screenOrientation="landscape"
-            android:exported="true" />
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
 
+        <!-- Receptor que inicia o painel quando a TV liga -->
         <receiver
             android:name=".BootReceiver"
-            android:enabled="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
 
