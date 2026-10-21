@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
-import android.graphics.Canvas;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -24,9 +23,6 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -47,16 +43,14 @@ public class MainActivity extends Activity {
     private static final int MAX_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 10000L;
 
-    // Tentativas de ajuste dinâmico após o carregamento da página
     private static final int MAX_CSS_ATTEMPTS = 8;
-    private static final long CSS_DELAY_MS = 1800L;
+    private static final long CSS_DELAY_MS = 2500L;
+
+    private static final int LARGURA_VIRTUAL = 1920;
 
     private WebView webView;
-    private ImageView cortinaCongelada;
-    private LinearLayout telaLoadingInicial;
     private View overlayCapturador;
     private TextView bannerStatus;
-
     private final List<String> playlistLinks = new ArrayList<>();
 
     private String usuarioBi = "";
@@ -73,7 +67,6 @@ public class MainActivity extends Activity {
     private boolean pageLoaded = false;
     private boolean fitClicado = false;
     private boolean emTelaDeLogin = false;
-    private boolean cortinaReveladaNestaPagina = false;
 
     private int backPressCount = 0;
     private long lastBackPressTime = 0L;
@@ -98,7 +91,7 @@ public class MainActivity extends Activity {
 
         configurarTela();
         criarWebView();
-        carregarLinkAtual(false);
+        carregarLinkAtual();
     }
 
     private void configurarTela() {
@@ -130,48 +123,27 @@ public class MainActivity extends Activity {
 
                 String urlLower = limpo.toLowerCase(Locale.ROOT);
                 if (urlLower.startsWith("https://") || urlLower.startsWith("http://")) {
-                    playlistLinks.add(otimizarUrlPowerBi(limpo));
+                    playlistLinks.add(limpo);
                 }
             }
         }
     }
 
-    /**
-     * Adiciona parâmetros nativos do Power BI na URL (se for link privado/embed)
-     * para já abrir sem barras laterais e em modo "Ajustar à página" nativo.
-     */
-    private String otimizarUrlPowerBi(String url) {
-        String lower = url.toLowerCase(Locale.ROOT);
-        if (lower.contains("powerbi.com") && !lower.contains("?r=")) {
-            // Links privados (reportEmbed ou groups/reports): adiciona parâmetros nativos da Microsoft
-            StringBuilder sb = new StringBuilder(url);
-            if (!url.contains("?")) {
-                sb.append("?chromeless=1&pageView=fitToPage&navContentPaneEnabled=false&filterPaneEnabled=false");
-            } else {
-                if (!lower.contains("pageview=")) sb.append("&pageView=fitToPage");
-                if (!lower.contains("navcontentpaneenabled=")) sb.append("&navContentPaneEnabled=false");
-                if (!lower.contains("filterpaneenabled=")) sb.append("&filterPaneEnabled=false");
-            }
-            return sb.toString();
-        }
-        return url;
-    }
-
-    // ------------------------------------------------------------------
-    // CRIAÇÃO DO WEBVIEW (RESPONSIVO E SEM LARGURA FIXA)
-    // ------------------------------------------------------------------
     private void criarWebView() {
         webView = new WebView(this);
         webView.setBackgroundColor(Color.parseColor("#141923"));
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
         webView.setFocusable(false);
         webView.setFocusableInTouchMode(false);
 
-        // NÃO usamos setInitialScale fixo! Deixamos o WebView na resolução nativa da TV
-        // e ajustamos a proporção real dinamicamente via CSS/JS.
+        int larguraTela = getResources().getDisplayMetrics().widthPixels;
+        int escala = (int) Math.round(larguraTela * 100.0 / LARGURA_VIRTUAL);
+        webView.setInitialScale(escala);
 
+        // --- HABILITA COOKIES PERSISTENTES E DE TERCEIROS (ESSENCIAL PARA POWER BI PRIVADO) ---
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -183,11 +155,8 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
-
-        // Responsividade nativa ativada
         settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(true);
-
+        settings.setLoadWithOverviewMode(false);
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
@@ -202,7 +171,6 @@ public class MainActivity extends Activity {
                 super.onPageStarted(view, url, favicon);
                 pageLoaded = false;
                 fitClicado = false;
-                cortinaReveladaNestaPagina = false;
                 cancelarTarefasDePagina();
                 verificarModoLogin(url);
             }
@@ -212,6 +180,7 @@ public class MainActivity extends Activity {
                 super.onPageFinished(view, url);
                 if (activityDestroyed || view != webView) return;
 
+                // Salva os cookies de login na memória flash da TV imediatamente
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     CookieManager.getInstance().flush();
                 }
@@ -223,17 +192,24 @@ public class MainActivity extends Activity {
                 verificarModoLogin(url);
 
                 if (emTelaDeLogin) {
+                    // Estamos na página de login da Microsoft: pausa a troca de links e faz o Auto-Login
                     if (playlistRunnable != null) {
                         handler.removeCallbacks(playlistRunnable);
                     }
-                    esconderCortinaCarregamento();
                     agendarAutoLogin(navigationId);
                 } else {
-                    // Inicia o ciclo de auto-ajuste responsivo para qualquer tamanho de tela
+                    // Estamos no relatório do Power BI: aplica viewport, esconde barras e agenda próxima troca
+                    injetarViewportVirtual();
                     agendarAjusteVisual(navigationId);
+                    agendarProximaTroca(navigationId);
 
+                    // Também verifica se o próprio Power BI abriu a telinha inicial de pedir e-mail
                     if (!usuarioBi.isEmpty()) {
                         agendarAutoLogin(navigationId);
+                    }
+
+                    if (overlayCapturador != null) {
+                        overlayCapturador.requestFocus();
                     }
                 }
             }
@@ -260,33 +236,6 @@ public class MainActivity extends Activity {
         container.addView(webView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // Cortina que congela a imagem anterior durante a atualização para não piscar a tela
-        cortinaCongelada = new ImageView(this);
-        cortinaCongelada.setScaleType(ImageView.ScaleType.FIT_XY);
-        cortinaCongelada.setVisibility(View.GONE);
-        container.addView(cortinaCongelada, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-
-        // Tela escura elegante apenas na primeira abertura do app
-        telaLoadingInicial = new LinearLayout(this);
-        telaLoadingInicial.setOrientation(LinearLayout.VERTICAL);
-        telaLoadingInicial.setGravity(Gravity.CENTER);
-        telaLoadingInicial.setBackgroundColor(Color.parseColor("#141923"));
-
-        ProgressBar spinner = new ProgressBar(this);
-        telaLoadingInicial.addView(spinner, new LinearLayout.LayoutParams(90, 90));
-
-        TextView txtCarregando = new TextView(this);
-        txtCarregando.setText("Carregando Painel...");
-        txtCarregando.setTextColor(Color.WHITE);
-        txtCarregando.setTextSize(18);
-        txtCarregando.setPadding(0, 28, 0, 0);
-        telaLoadingInicial.addView(txtCarregando);
-
-        container.addView(telaLoadingInicial, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-
-        // Camada transparente para capturar o controle remoto
         overlayCapturador = new View(this);
         overlayCapturador.setBackgroundColor(Color.TRANSPARENT);
         overlayCapturador.setFocusable(true);
@@ -331,85 +280,225 @@ public class MainActivity extends Activity {
         }, 10000L);
     }
 
-    // ------------------------------------------------------------------
-    // CONGELAMENTO DE IMAGEM (EVITA TELA FEIA NO CARREGAMENTO)
-    // ------------------------------------------------------------------
-    private void congelarTelaAtualAntesDeTrocar() {
-        if (webView == null || cortinaCongelada == null || emTelaDeLogin) return;
-        if (webView.getWidth() <= 0 || webView.getHeight() <= 0) return;
+    /**
+     * Detecta se a URL atual é uma página de autenticação da Microsoft / Azure AD / ADFS.
+     */
+    private void verificarModoLogin(String url) {
+        if (url == null) return;
+        String u = url.toLowerCase(Locale.ROOT);
+        boolean isLogin = u.contains("login.microsoftonline.com")
+                || u.contains("login.live.com")
+                || u.contains("login.windows.net")
+                || u.contains("/adfs/ls")
+                || u.contains("oauth2/authorize");
 
-        try {
-            Bitmap bmp = Bitmap.createBitmap(webView.getWidth(), webView.getHeight(), Bitmap.Config.RGB_565);
-            Canvas canvas = new Canvas(bmp);
-            webView.draw(canvas);
-            cortinaCongelada.setImageBitmap(bmp);
-            cortinaCongelada.setAlpha(1f);
-            cortinaCongelada.setVisibility(View.VISIBLE);
-        } catch (Throwable ignored) { }
-    }
+        if (isLogin != emTelaDeLogin) {
+            emTelaDeLogin = isLogin;
+            if (emTelaDeLogin) {
+                // Na tela de login, libera o foco do WebView caso o usuário precise aprovar MFA (2 fatores)
+                // e avisa no canto da tela que "3x Voltar" continua abrindo as configurações.
+                overlayCapturador.setVisibility(View.GONE);
+                webView.setFocusable(true);
+                webView.setFocusableInTouchMode(true);
+                webView.requestFocus();
 
-    private void esconderCortinaCarregamento() {
-        if (cortinaReveladaNestaPagina || activityDestroyed) return;
-        cortinaReveladaNestaPagina = true;
+                bannerStatus.setText("Autenticando no Power BI... (Aperte 3x VOLTAR para Configurações)");
+                bannerStatus.setVisibility(View.VISIBLE);
+            } else {
+                // Saiu do login e entrou no relatório: volta a bloquear o foco do WebView!
+                webView.setFocusable(false);
+                webView.setFocusableInTouchMode(false);
+                overlayCapturador.setVisibility(View.VISIBLE);
+                overlayCapturador.requestFocus();
 
-        if (telaLoadingInicial != null && telaLoadingInicial.getVisibility() == View.VISIBLE) {
-            telaLoadingInicial.animate().alpha(0f).setDuration(500).withEndAction(new Runnable() {
-                @Override
-                public void run() {
-                    if (telaLoadingInicial != null) telaLoadingInicial.setVisibility(View.GONE);
-                }
-            }).start();
-        }
-
-        if (cortinaCongelada != null && cortinaCongelada.getVisibility() == View.VISIBLE) {
-            cortinaCongelada.animate().alpha(0f).setDuration(500).withEndAction(new Runnable() {
-                @Override
-                public void run() {
-                    if (cortinaCongelada != null) {
-                        cortinaCongelada.setVisibility(View.GONE);
-                        cortinaCongelada.setImageBitmap(null);
-                    }
-                }
-            }).start();
+                bannerStatus.setVisibility(View.GONE);
+            }
         }
     }
 
-    // ------------------------------------------------------------------
-    // PLAYLIST E RECARGA
-    // ------------------------------------------------------------------
-    private void carregarLinkAtual(boolean congelarAnterior) {
+    /**
+     * Agenda tentativas periódicas de preencher o usuário, senha e botão "Continuar conectado".
+     */
+    private void agendarAutoLogin(final long idDaPagina) {
+        if (activityDestroyed || webView == null) return;
+        if (usuarioBi.isEmpty() && senhaBi.isEmpty()) return;
+
+        if (loginRunnable != null) {
+            handler.removeCallbacks(loginRunnable);
+        }
+
+        loginRunnable = new Runnable() {
+            @Override
+            public void run() {
+                loginRunnable = null;
+                if (activityDestroyed || webView == null || idDaPagina != navigationId) return;
+
+                executarScriptAutoLogin();
+
+                // Se ainda estiver na tela de login, repete a checagem a cada 2.5 segundos
+                // porque a Microsoft carrega a tela de E-mail -> Senha -> Continuar Conectado via AJAX
+                if (emTelaDeLogin) {
+                    agendarAutoLogin(idDaPagina);
+                }
+            }
+        };
+
+        handler.postDelayed(loginRunnable, 2000L);
+    }
+
+    /**
+     * Injeta JavaScript que preenche automaticamente:
+     * 1) Tela inicial do Power BI caso peça o e-mail antes de redirecionar;
+     * 2) Campo de e-mail da Microsoft (input[name="loginfmt"]);
+     * 3) Campo de senha da Microsoft (input[name="passwd"]);
+     * 4) Pergunta "Continuar conectado?" (KMSI - clica em "Sim").
+     */
+    private void executarScriptAutoLogin() {
+        if (webView == null || activityDestroyed) return;
+
+        final String userJson = JSONObject.quote(usuarioBi);
+        final String passJson = JSONObject.quote(senhaBi);
+
+        String js =
+                "(function() {" +
+                "  var USER = " + userJson + ";" +
+                "  var PASS = " + passJson + ";" +
+                "  function visivel(el) {" +
+                "    return el && el.offsetParent !== null && !el.disabled;" +
+                "  }" +
+                "  function preencherInput(el, val) {" +
+                "    el.focus();" +
+                "    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;" +
+                "    if (setter) { setter.call(el, val); } else { el.value = val; }" +
+                "    el.dispatchEvent(new Event('input', { bubbles: true }));" +
+                "    el.dispatchEvent(new Event('change', { bubbles: true }));" +
+                "    el.blur();" +
+                "  }" +
+
+                // 1) Verifica se está na pergunta 'Continuar conectado?' (KMSI) e clica em Sim
+                "  var kmsi = document.getElementById('KmsiCheckboxField');" +
+                "  var btnSubmit = document.getElementById('idSIButton9');" +
+                "  if (visivel(kmsi) && visivel(btnSubmit)) {" +
+                "    if (!kmsi.checked) kmsi.click();" +
+                "    btnSubmit.click();" +
+                "    return 'KMSI_CLICKED';" +
+                "  }" +
+
+                // 2) Verifica se o campo de SENHA da Microsoft está visível
+                "  var passInput = document.querySelector('input[name=\"passwd\"], input[type=\"password\"]');" +
+                "  if (visivel(passInput) && PASS.length > 0) {" +
+                "    if (passInput.getAttribute('data-preenchido') !== '1') {" +
+                "      passInput.setAttribute('data-preenchido', '1');" +
+                "      preencherInput(passInput, PASS);" +
+                "      setTimeout(function() {" +
+                "        var btn = document.getElementById('idSIButton9') || document.querySelector('input[type=\"submit\"], button[type=\"submit\"]');" +
+                "        if (visivel(btn)) btn.click();" +
+                "      }, 600);" +
+                "      return 'PASS_FILLED';" +
+                "    }" +
+                "  }" +
+
+                // 3) Verifica se o campo de E-MAIL da Microsoft ou do Power BI está visível
+                "  var emailInput = document.querySelector('input[name=\"loginfmt\"], input[type=\"email\"], input#email');" +
+                "  if (visivel(emailInput) && USER.length > 0 && !visivel(passInput)) {" +
+                "    if (emailInput.getAttribute('data-preenchido') !== '1') {" +
+                "      emailInput.setAttribute('data-preenchido', '1');" +
+                "      preencherInput(emailInput, USER);" +
+                "      setTimeout(function() {" +
+                "        var btn = document.getElementById('idSIButton9') || document.getElementById('submitBtn') || document.querySelector('input[type=\"submit\"], button[type=\"submit\"], button.submitBtn');" +
+                "        if (visivel(btn)) btn.click();" +
+                "      }, 600);" +
+                "      return 'USER_FILLED';" +
+                "    }" +
+                "  }" +
+
+                // 4) Caso apareça a lista 'Escolha uma conta' (Pick an account) na Microsoft
+                "  if (USER.length > 0) {" +
+                "    var tiles = document.querySelectorAll('[data-test-id], .table[role=\"button\"]');" +
+                "    for (var i = 0; i < tiles.length; i++) {" +
+                "      if ((tiles[i].innerText || '').toLowerCase().indexOf(USER.toLowerCase()) >= 0) {" +
+                "        tiles[i].click();" +
+                "        return 'TILE_CLICKED';" +
+                "      }" +
+                "    }" +
+                "  }" +
+
+                "  return 'NONE';" +
+                "})();";
+
+        webView.evaluateJavascript(js, null);
+    }
+
+    private void carregarLinkAtual() {
         if (activityDestroyed || webView == null || playlistLinks.isEmpty()) return;
 
         cancelarTodasAsTarefas();
 
-        if (congelarAnterior) {
-            congelarTelaAtualAntesDeTrocar();
-        }
-
         navigationId++;
-        final long idAtual = navigationId;
-
         pageLoaded = false;
         retryCount = 0;
         cssAttempts = 0;
         fitClicado = false;
-        cortinaReveladaNestaPagina = false;
 
         webView.loadUrl(playlistLinks.get(currentIndex));
+    }
+
+    private void agendarProximaTroca(final long idAtual) {
+        if (playlistRunnable != null) {
+            handler.removeCallbacks(playlistRunnable);
+        }
 
         playlistRunnable = new Runnable() {
             @Override
             public void run() {
                 if (activityDestroyed || idAtual != navigationId || emTelaDeLogin) return;
 
-                if (!playlistLinks.isEmpty()) {
+                if (playlistLinks.size() == 1) {
+                    // Se houver apenas 1 link privado, tenta primeiro clicar no botão "Atualizar" interno do Power BI
+                    // para atualizar os visuais sem piscar a tela inteira; ou recarrega a URL.
+                    atualizarRelatorioUnicoOuRecarregar();
+                } else if (!playlistLinks.isEmpty()) {
                     currentIndex = (currentIndex + 1) % playlistLinks.size();
-                    carregarLinkAtual(true);
+                    carregarLinkAtual();
                 }
             }
         };
 
         handler.postDelayed(playlistRunnable, intervaloMs);
+    }
+
+    /**
+     * Para quando há 1 único link: tenta acionar o botão de "Atualizar visuais" do próprio Power BI
+     * ou recarrega a página mantendo os cookies de login.
+     */
+    private void atualizarRelatorioUnicoOuRecarregar() {
+        if (webView == null || activityDestroyed) return;
+
+        String jsRefresh =
+                "(function() {" +
+                "  var btns = document.querySelectorAll('button, [role=\"button\"]');" +
+                "  for (var i = 0; i < btns.length; i++) {" +
+                "    var t = ((btns[i].getAttribute('title') || '') + ' ' + (btns[i].getAttribute('aria-label') || '')).toLowerCase();" +
+                "    if (t.indexOf('atualizar') >= 0 || t.indexOf('refresh') >= 0) {" +
+                "      btns[i].click();" +
+                "      return true;" +
+                "    }" +
+                "  }" +
+                "  return false;" +
+                "})();";
+
+        webView.evaluateJavascript(jsRefresh, new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String clicouRefresh) {
+                if ("true".equals(clicouRefresh)) {
+                    // Conseguiu atualizar por dentro do Power BI sem piscar a tela! Agenda o próximo ciclo.
+                    agendarProximaTroca(navigationId);
+                } else {
+                    // Não achou botão interno (ex: modo reportEmbed puro), então recarrega o link
+                    carregarLinkAtual();
+                }
+            }
+        });
     }
 
     private void tratarFalhaDeCarregamento() {
@@ -433,9 +522,24 @@ public class MainActivity extends Activity {
         handler.postDelayed(retryRunnable, RETRY_DELAY_MS);
     }
 
-    // ------------------------------------------------------------------
-    // AUTO-AJUSTE UNIVERSAL DE TELA (SEM RESOLUÇÃO FIXA!)
-    // ------------------------------------------------------------------
+    private void injetarViewportVirtual() {
+        if (webView == null || activityDestroyed || emTelaDeLogin) return;
+
+        String js =
+                "(function(){" +
+                "  var m = document.querySelector('meta[name=viewport]');" +
+                "  if (!m) {" +
+                "    m = document.createElement('meta');" +
+                "    m.name = 'viewport';" +
+                "    if (document.head) document.head.appendChild(m);" +
+                "  }" +
+                "  m.setAttribute('content', 'width=" + LARGURA_VIRTUAL + ", initial-scale=1');" +
+                "  window.dispatchEvent(new Event('resize'));" +
+                "})();";
+
+        webView.evaluateJavascript(js, null);
+    }
+
     private void agendarAjusteVisual(final long idDaPagina) {
         if (activityDestroyed || webView == null || emTelaDeLogin) return;
 
@@ -450,13 +554,11 @@ public class MainActivity extends Activity {
                 if (activityDestroyed || webView == null
                         || idDaPagina != navigationId || !pageLoaded || emTelaDeLogin) return;
 
-                aplicarAutoAjusteUniversal(idDaPagina);
+                aplicarEstiloEClicarEmAjustar();
 
                 cssAttempts++;
                 if (cssAttempts < MAX_CSS_ATTEMPTS) {
                     agendarAjusteVisual(idDaPagina);
-                } else {
-                    esconderCortinaCarregamento();
                 }
             }
         };
@@ -464,47 +566,22 @@ public class MainActivity extends Activity {
         handler.postDelayed(cssRunnable, CSS_DELAY_MS);
     }
 
-    /**
-     * Ajusta qualquer relatório do Power BI (público ou privado) para ocupar 100% da tela
-     * de qualquer TV sem usar valores fixos em pixels:
-     *
-     * 1) Define viewport 'width=device-width, initial-scale=1' para usar a tela real da TV;
-     * 2) Força html, body e containers externos do Power BI a terem 100vw x 100vh;
-     * 3) Esconde barras inferiores/superiores do Power BI zerando a altura delas;
-     * 4) Clica em "Ajustar à página" (Fit to page) se o botão existir;
-     * 5) Mede a área interna do relatório (.displayArea) vs o tamanho da TV (window.innerWidth/Height)
-     *    e, se o Power BI tiver deixado bordas sobrando ou cortando, calcula o zoom/scale exato!
-     */
-    private void aplicarAutoAjusteUniversal(final long idDaPagina) {
+    private void aplicarEstiloEClicarEmAjustar() {
         if (webView == null || activityDestroyed || emTelaDeLogin) return;
 
         final String deveClicar = fitClicado ? "false" : "true";
 
         String js =
                 "(function() {" +
-                // 1) Viewport dinâmico (usa o tamanho real do dispositivo, sem número fixo)
-                "  var m = document.querySelector('meta[name=viewport]');" +
-                "  if (!m) {" +
-                "    m = document.createElement('meta');" +
-                "    m.name = 'viewport';" +
-                "    if (document.head) document.head.appendChild(m);" +
-                "  }" +
-                "  m.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');" +
-
-                // 2) CSS 100% responsivo (100vw x 100vh) e remoção das barras de status/logo
                 "  var css = '" +
-                "    html, body { width: 100vw !important; height: 100vh !important; " +
-                "      margin: 0 !important; padding: 0 !important; " +
-                "      background: #141923 !important; overflow: hidden !important; }" +
-                "    ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }" +
-                "    .logoBar, .statusbar, .pbi-status-bar, .bottomBar, .logoBarWrapper, " +
-                "    [class*=\"logoBar\"], [class*=\"statusBar\"], [class*=\"statusbar\"] { " +
-                "      display: none !important; height: 0 !important; min-height: 0 !important; " +
-                "      max-height: 0 !important; padding: 0 !important; margin: 0 !important; border: none !important; }" +
-                "    #pbiAppPlaceHolder, .reportContainer, .landingController, .embedWrapper, iframe { " +
-                "      width: 100vw !important; height: 100vh !important; " +
-                "      max-width: 100vw !important; max-height: 100vh !important; " +
-                "      top: 0 !important; left: 0 !important; margin: 0 !important; padding: 0 !important; border: none !important; }" +
+                "    html, body { margin:0 !important; padding:0 !important;" +
+                "      background:#141923 !important; overflow:hidden !important; }" +
+                "    ::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }" +
+                // Esconde barras inferiores e também menus superiores/laterais de links privados do Power BI
+                "    .logoBar, .statusbar, .pbi-status-bar, .bottomBar," +
+                "    app-header, nav-pane, .appBar, .actionBar, #pbiAppHeader," +
+                "    [class*=\"logoBar\"], [class*=\"statusBar\"], [class*=\"statusbar\"]" +
+                "      { display:none !important; }" +
                 "  ';" +
                 "  var style = document.getElementById('painel-tv-custom-style');" +
                 "  if (!style && document.head) {" +
@@ -513,8 +590,6 @@ public class MainActivity extends Activity {
                 "    document.head.appendChild(style);" +
                 "  }" +
                 "  if (style) { style.textContent = css; }" +
-
-                // 3) Clique único no botão 'Ajustar à página' / 'Fit to page' (caso exista)
                 "  var achou = false;" +
                 "  if (" + deveClicar + ") {" +
                 "    var els = document.querySelectorAll('button, [role=\"button\"]');" +
@@ -528,170 +603,20 @@ public class MainActivity extends Activity {
                 "      }" +
                 "    }" +
                 "  }" +
-
-                // 4) Dispara evento de resize para o Power BI recalcular usando a tela inteira (sem a barra de baixo)
                 "  window.dispatchEvent(new Event('resize'));" +
-
-                // 5) Verifica se já existem gráficos desenhados na tela para liberar a cortina
-                "  var temGraficos = document.querySelectorAll('visual-modern, .visualContainer, .visual, canvas, svg').length > 2;" +
-                "  return (achou ? '1' : '0') + ':' + (temGraficos ? 'READY' : 'WAIT');" +
+                "  return achou;" +
                 "})();";
 
         webView.evaluateJavascript(js, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String resultado) {
-                if (activityDestroyed || idDaPagina != navigationId) return;
-
-                String resp = resultado != null ? resultado.replace("\"", "") : "";
-                if (resp.startsWith("1:")) {
+                if ("true".equals(resultado)) {
                     fitClicado = true;
-                }
-
-                boolean temGraficos = resp.endsWith(":READY");
-
-                if (fitClicado || (temGraficos && cssAttempts >= 2) || cssAttempts >= 3) {
-                    handler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (!activityDestroyed && idDaPagina == navigationId) {
-                                esconderCortinaCarregamento();
-                            }
-                        }
-                    }, 600L);
                 }
             }
         });
     }
 
-    // ------------------------------------------------------------------
-    // AUTO-LOGIN MICROSOFT (PARA LINKS PRIVADOS)
-    // ------------------------------------------------------------------
-    private void verificarModoLogin(String url) {
-        if (url == null) return;
-        String u = url.toLowerCase(Locale.ROOT);
-        boolean isLogin = u.contains("login.microsoftonline.com")
-                || u.contains("login.live.com")
-                || u.contains("login.windows.net")
-                || u.contains("/adfs/ls")
-                || u.contains("oauth2/authorize");
-
-        if (isLogin != emTelaDeLogin) {
-            emTelaDeLogin = isLogin;
-            if (emTelaDeLogin) {
-                esconderCortinaCarregamento();
-                overlayCapturador.setVisibility(View.GONE);
-                webView.setFocusable(true);
-                webView.setFocusableInTouchMode(true);
-                webView.requestFocus();
-
-                bannerStatus.setText("Autenticando no Power BI... (Aperte 3x VOLTAR para Configurações)");
-                bannerStatus.setVisibility(View.VISIBLE);
-            } else {
-                webView.setFocusable(false);
-                webView.setFocusableInTouchMode(false);
-                overlayCapturador.setVisibility(View.VISIBLE);
-                overlayCapturador.requestFocus();
-
-                bannerStatus.setVisibility(View.GONE);
-            }
-        }
-    }
-
-    private void agendarAutoLogin(final long idDaPagina) {
-        if (activityDestroyed || webView == null) return;
-        if (usuarioBi.isEmpty() && senhaBi.isEmpty()) return;
-
-        if (loginRunnable != null) {
-            handler.removeCallbacks(loginRunnable);
-        }
-
-        loginRunnable = new Runnable() {
-            @Override
-            public void run() {
-                loginRunnable = null;
-                if (activityDestroyed || webView == null || idDaPagina != navigationId) return;
-
-                executarScriptAutoLogin();
-
-                if (emTelaDeLogin) {
-                    agendarAutoLogin(idDaPagina);
-                }
-            }
-        };
-
-        handler.postDelayed(loginRunnable, 2000L);
-    }
-
-    private void executarScriptAutoLogin() {
-        if (webView == null || activityDestroyed) return;
-
-        final String userJson = JSONObject.quote(usuarioBi);
-        final String passJson = JSONObject.quote(senhaBi);
-
-        String js =
-                "(function() {" +
-                "  var USER = " + userJson + ";" +
-                "  var PASS = " + passJson + ";" +
-                "  function visivel(el) {" +
-                "    return el && el.offsetParent !== null && !el.disabled;" +
-                "  }" +
-                "  function preencherInput(el, val) {" +
-                "    el.focus();" +
-                "    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;" +
-                "    if (setter) { setter.call(el, val); } else { el.value = val; }" +
-                "    el.dispatchEvent(new Event('input', { bubbles: true }));" +
-                "    el.dispatchEvent(new Event('change', { bubbles: true }));" +
-                "    el.blur();" +
-                "  }" +
-                "  var kmsi = document.getElementById('KmsiCheckboxField');" +
-                "  var btnSubmit = document.getElementById('idSIButton9');" +
-                "  if (visivel(kmsi) && visivel(btnSubmit)) {" +
-                "    if (!kmsi.checked) kmsi.click();" +
-                "    btnSubmit.click();" +
-                "    return 'KMSI_CLICKED';" +
-                "  }" +
-                "  var passInput = document.querySelector('input[name=\"passwd\"], input[type=\"password\"]');" +
-                "  if (visivel(passInput) && PASS.length > 0) {" +
-                "    if (passInput.getAttribute('data-preenchido') !== '1') {" +
-                "      passInput.setAttribute('data-preenchido', '1');" +
-                "      preencherInput(passInput, PASS);" +
-                "      setTimeout(function() {" +
-                "        var btn = document.getElementById('idSIButton9') || document.querySelector('input[type=\"submit\"], button[type=\"submit\"]');" +
-                "        if (visivel(btn)) btn.click();" +
-                "      }, 600);" +
-                "      return 'PASS_FILLED';" +
-                "    }" +
-                "  }" +
-                "  var emailInput = document.querySelector('input[name=\"loginfmt\"], input[type=\"email\"], input#email');" +
-                "  if (visivel(emailInput) && USER.length > 0 && !visivel(passInput)) {" +
-                "    if (emailInput.getAttribute('data-preenchido') !== '1') {" +
-                "      emailInput.setAttribute('data-preenchido', '1');" +
-                "      preencherInput(emailInput, USER);" +
-                "      setTimeout(function() {" +
-                "        var btn = document.getElementById('idSIButton9') || document.getElementById('submitBtn') || document.querySelector('input[type=\"submit\"], button[type=\"submit\"], button.submitBtn');" +
-                "        if (visivel(btn)) btn.click();" +
-                "      }, 600);" +
-                "      return 'USER_FILLED';" +
-                "    }" +
-                "  }" +
-                "  if (USER.length > 0) {" +
-                "    var tiles = document.querySelectorAll('[data-test-id], .table[role=\"button\"]');" +
-                "    for (var i = 0; i < tiles.length; i++) {" +
-                "      if ((tiles[i].innerText || '').toLowerCase().indexOf(USER.toLowerCase()) >= 0) {" +
-                "        tiles[i].click();" +
-                "        return 'TILE_CLICKED';" +
-                "      }" +
-                "    }" +
-                "  }" +
-                "  return 'NONE';" +
-                "})();";
-
-        webView.evaluateJavascript(js, null);
-    }
-
-    // ------------------------------------------------------------------
-    // CANCELAMENTO E CONTROLE REMOTO
-    // ------------------------------------------------------------------
     private void cancelarTarefasDePagina() {
         if (retryRunnable != null) {
             handler.removeCallbacks(retryRunnable);
@@ -724,6 +649,7 @@ public class MainActivity extends Activity {
     private boolean processarTeclaControle(int tecla, KeyEvent event) {
         if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
 
+        // 1) Botão Voltar 3 vezes seguidas abre as configurações SEMPRE (mesmo em tela de login)
         if (tecla == KeyEvent.KEYCODE_BACK) {
             if (event.getRepeatCount() > 0) {
                 abrirConfiguracoes();
@@ -746,6 +672,8 @@ public class MainActivity extends Activity {
             return true;
         }
 
+        // Se estiver na tela de login da Microsoft, deixa as setas e o OK funcionarem dentro da página
+        // caso a empresa exija clicar em um aprovação de 2 fatores (MFA) na primeira vez!
         if (emTelaDeLogin) {
             if (tecla == KeyEvent.KEYCODE_MENU || tecla == KeyEvent.KEYCODE_SETTINGS) {
                 abrirConfiguracoes();
@@ -754,6 +682,7 @@ public class MainActivity extends Activity {
             return false;
         }
 
+        // 2) Fora da tela de login (exibindo o painel): qualquer tecla abre as configurações
         if (tecla == KeyEvent.KEYCODE_DPAD_CENTER
                 || tecla == KeyEvent.KEYCODE_ENTER
                 || tecla == KeyEvent.KEYCODE_NUMPAD_ENTER
