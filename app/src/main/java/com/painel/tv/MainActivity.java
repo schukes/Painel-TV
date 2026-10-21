@@ -48,7 +48,15 @@ public class MainActivity extends Activity {
 
     private static final int LARGURA_VIRTUAL = 1920;
 
-    private WebView webView;
+    // Tempo que o painel de trás espera, DEPOIS de carregar, para o Power BI desenhar os visuais
+    // antes de trocar com o painel da frente. Aumente se os gráficos ainda aparecerem incompletos.
+    private static final long RENDER_DELAY_MS = 10000L;
+    // Se o próximo painel não terminar de carregar nesse tempo, desiste e mantém o atual na tela.
+    private static final long PRELOAD_TIMEOUT_MS = 60000L;
+
+    private WebView webView;        // FRENTE: o que está visível
+    private WebView webViewBack;    // TRÁS: carrega o próximo link escondido
+    private FrameLayout container;
     private View overlayCapturador;
     private TextView bannerStatus;
     private final List<String> playlistLinks = new ArrayList<>();
@@ -56,7 +64,8 @@ public class MainActivity extends Activity {
     private String usuarioBi = "";
     private String senhaBi = "";
 
-    private int currentIndex = 0;
+    private int currentIndex = 0;   // link que está na frente
+    private int targetIndex = 0;    // link que está sendo carregado atrás
     private int retryCount = 0;
     private int cssAttempts = 0;
 
@@ -77,6 +86,8 @@ public class MainActivity extends Activity {
     private Runnable retryRunnable;
     private Runnable cssRunnable;
     private Runnable loginRunnable;
+    private Runnable swapRunnable;
+    private Runnable timeoutRunnable;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -91,7 +102,7 @@ public class MainActivity extends Activity {
 
         configurarTela();
         criarWebView();
-        carregarLinkAtual();
+        carregarPrimeiroLink();
     }
 
     private void configurarTela() {
@@ -129,28 +140,29 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void criarWebView() {
-        webView = new WebView(this);
-        webView.setBackgroundColor(Color.parseColor("#141923"));
-        webView.setVerticalScrollBarEnabled(false);
-        webView.setHorizontalScrollBarEnabled(false);
-        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+    // ------------------------------------------------------------------------------------------
+    // CRIAÇÃO DOS WEBVIEWS (frente + trás)
+    // ------------------------------------------------------------------------------------------
 
-        webView.setFocusable(false);
-        webView.setFocusableInTouchMode(false);
+    private WebView novoWebView() {
+        WebView wv = new WebView(this);
+        wv.setBackgroundColor(Color.parseColor("#141923"));
+        wv.setVerticalScrollBarEnabled(false);
+        wv.setHorizontalScrollBarEnabled(false);
+        wv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
+        wv.setFocusable(false);
+        wv.setFocusableInTouchMode(false);
 
         int larguraTela = getResources().getDisplayMetrics().widthPixels;
         int escala = (int) Math.round(larguraTela * 100.0 / LARGURA_VIRTUAL);
-        webView.setInitialScale(escala);
+        wv.setInitialScale(escala);
 
-        // --- HABILITA COOKIES PERSISTENTES E DE TERCEIROS (ESSENCIAL PARA POWER BI PRIVADO) ---
-        CookieManager cookieManager = CookieManager.getInstance();
-        cookieManager.setAcceptCookie(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            cookieManager.setAcceptThirdPartyCookies(webView, true);
+            CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true);
         }
 
-        WebSettings settings = webView.getSettings();
+        WebSettings settings = wv.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
@@ -165,74 +177,20 @@ public class MainActivity extends Activity {
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
 
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                super.onPageStarted(view, url, favicon);
-                pageLoaded = false;
-                fitClicado = false;
-                cancelarTarefasDePagina();
-                verificarModoLogin(url);
-            }
+        wv.setWebViewClient(new PainelClient());
+        return wv;
+    }
 
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                if (activityDestroyed || view != webView) return;
+    private void criarWebView() {
+        CookieManager.getInstance().setAcceptCookie(true);
 
-                // Salva os cookies de login na memória flash da TV imediatamente
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    CookieManager.getInstance().flush();
-                }
+        webView = novoWebView();
+        webViewBack = novoWebView();
 
-                pageLoaded = true;
-                retryCount = 0;
-                cssAttempts = 0;
-
-                verificarModoLogin(url);
-
-                if (emTelaDeLogin) {
-                    // Estamos na página de login da Microsoft: pausa a troca de links e faz o Auto-Login
-                    if (playlistRunnable != null) {
-                        handler.removeCallbacks(playlistRunnable);
-                    }
-                    agendarAutoLogin(navigationId);
-                } else {
-                    // Estamos no relatório do Power BI: aplica viewport, esconde barras e agenda próxima troca
-                    injetarViewportVirtual();
-                    agendarAjusteVisual(navigationId);
-                    agendarProximaTroca(navigationId);
-
-                    // Também verifica se o próprio Power BI abriu a telinha inicial de pedir e-mail
-                    if (!usuarioBi.isEmpty()) {
-                        agendarAutoLogin(navigationId);
-                    }
-
-                    if (overlayCapturador != null) {
-                        overlayCapturador.requestFocus();
-                    }
-                }
-            }
-
-            @Override
-            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                super.onReceivedError(view, request, error);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
-                    tratarFalhaDeCarregamento();
-                }
-            }
-
-            @SuppressWarnings("deprecation")
-            @Override
-            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                super.onReceivedError(view, errorCode, description, failingUrl);
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-                    tratarFalhaDeCarregamento();
-                }
-            }
-        });
-
-        FrameLayout container = new FrameLayout(this);
+        container = new FrameLayout(this);
+        // Ordem importa: o de trás é adicionado primeiro (fica embaixo), o da frente por cima.
+        container.addView(webViewBack, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         container.addView(webView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
@@ -280,23 +238,124 @@ public class MainActivity extends Activity {
         }, 10000L);
     }
 
-    /**
-     * Detecta se a URL atual é uma página de autenticação da Microsoft / Azure AD / ADFS.
-     */
-    private void verificarModoLogin(String url) {
-        if (url == null) return;
+    // ------------------------------------------------------------------------------------------
+    // WEBVIEW CLIENT (compartilhado pelos dois WebViews; diferencia por "view == webView/Back")
+    // ------------------------------------------------------------------------------------------
+
+    private class PainelClient extends WebViewClient {
+
+        @Override
+        public void onPageStarted(WebView view, String url, Bitmap favicon) {
+            super.onPageStarted(view, url, favicon);
+            if (activityDestroyed) return;
+
+            if (view == webViewBack) {
+                // O link novo caiu na tela de login da Microsoft (cookie vencido):
+                // traz esse WebView para a frente para o login/MFA funcionar.
+                if (ehUrlLogin(url)) {
+                    trocarFrenteETras();
+                } else {
+                    return;
+                }
+            }
+            if (view != webView) return;
+
+            pageLoaded = false;
+            fitClicado = false;
+            cancelarTarefasDePagina();
+            verificarModoLogin(url);
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            super.onPageFinished(view, url);
+            if (activityDestroyed) return;
+            if (url != null && url.startsWith("about:blank")) return;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                CookieManager.getInstance().flush();
+            }
+
+            // Página de trás terminou de carregar: prepara e espera o tempo de renderização
+            if (view == webViewBack) {
+                aoTerminarCarregamentoDeTras(url);
+                return;
+            }
+            if (view != webView) return;
+
+            // ---- Página da FRENTE terminou (primeira abertura ou fluxo de login) ----
+            pageLoaded = true;
+            retryCount = 0;
+            cssAttempts = 0;
+
+            verificarModoLogin(url);
+
+            if (emTelaDeLogin) {
+                if (playlistRunnable != null) {
+                    handler.removeCallbacks(playlistRunnable);
+                }
+                agendarAutoLogin(navigationId);
+            } else {
+                injetarViewportVirtual(webView);
+                agendarAjusteVisual(webView, navigationId);
+                agendarProximaTroca(navigationId);
+
+                if (!usuarioBi.isEmpty()) {
+                    agendarAutoLogin(navigationId);
+                }
+                if (overlayCapturador != null) {
+                    overlayCapturador.requestFocus();
+                }
+            }
+        }
+
+        @Override
+        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+            super.onReceivedError(view, request, error);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
+                tratarFalha(view);
+            }
+        }
+
+        @SuppressWarnings("deprecation")
+        @Override
+        public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+            super.onReceivedError(view, errorCode, description, failingUrl);
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                tratarFalha(view);
+            }
+        }
+    }
+
+    private void tratarFalha(WebView view) {
+        if (view == webViewBack) {
+            tratarFalhaDePreload();
+        } else if (view == webView) {
+            tratarFalhaDeCarregamento();
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // LOGIN
+    // ------------------------------------------------------------------------------------------
+
+    private boolean ehUrlLogin(String url) {
+        if (url == null) return false;
         String u = url.toLowerCase(Locale.ROOT);
-        boolean isLogin = u.contains("login.microsoftonline.com")
+        return u.contains("login.microsoftonline.com")
                 || u.contains("login.live.com")
                 || u.contains("login.windows.net")
                 || u.contains("/adfs/ls")
                 || u.contains("oauth2/authorize");
+    }
+
+    private void verificarModoLogin(String url) {
+        if (url == null) return;
+        boolean isLogin = ehUrlLogin(url);
 
         if (isLogin != emTelaDeLogin) {
             emTelaDeLogin = isLogin;
             if (emTelaDeLogin) {
-                // Na tela de login, libera o foco do WebView caso o usuário precise aprovar MFA (2 fatores)
-                // e avisa no canto da tela que "3x Voltar" continua abrindo as configurações.
                 overlayCapturador.setVisibility(View.GONE);
                 webView.setFocusable(true);
                 webView.setFocusableInTouchMode(true);
@@ -305,7 +364,6 @@ public class MainActivity extends Activity {
                 bannerStatus.setText("Autenticando no Power BI... (Aperte 3x VOLTAR para Configurações)");
                 bannerStatus.setVisibility(View.VISIBLE);
             } else {
-                // Saiu do login e entrou no relatório: volta a bloquear o foco do WebView!
                 webView.setFocusable(false);
                 webView.setFocusableInTouchMode(false);
                 overlayCapturador.setVisibility(View.VISIBLE);
@@ -316,9 +374,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /**
-     * Agenda tentativas periódicas de preencher o usuário, senha e botão "Continuar conectado".
-     */
     private void agendarAutoLogin(final long idDaPagina) {
         if (activityDestroyed || webView == null) return;
         if (usuarioBi.isEmpty() && senhaBi.isEmpty()) return;
@@ -335,8 +390,6 @@ public class MainActivity extends Activity {
 
                 executarScriptAutoLogin();
 
-                // Se ainda estiver na tela de login, repete a checagem a cada 2.5 segundos
-                // porque a Microsoft carrega a tela de E-mail -> Senha -> Continuar Conectado via AJAX
                 if (emTelaDeLogin) {
                     agendarAutoLogin(idDaPagina);
                 }
@@ -346,13 +399,6 @@ public class MainActivity extends Activity {
         handler.postDelayed(loginRunnable, 2000L);
     }
 
-    /**
-     * Injeta JavaScript que preenche automaticamente:
-     * 1) Tela inicial do Power BI caso peça o e-mail antes de redirecionar;
-     * 2) Campo de e-mail da Microsoft (input[name="loginfmt"]);
-     * 3) Campo de senha da Microsoft (input[name="passwd"]);
-     * 4) Pergunta "Continuar conectado?" (KMSI - clica em "Sim").
-     */
     private void executarScriptAutoLogin() {
         if (webView == null || activityDestroyed) return;
 
@@ -375,7 +421,6 @@ public class MainActivity extends Activity {
                 "    el.blur();" +
                 "  }" +
 
-                // 1) Verifica se está na pergunta 'Continuar conectado?' (KMSI) e clica em Sim
                 "  var kmsi = document.getElementById('KmsiCheckboxField');" +
                 "  var btnSubmit = document.getElementById('idSIButton9');" +
                 "  if (visivel(kmsi) && visivel(btnSubmit)) {" +
@@ -384,7 +429,6 @@ public class MainActivity extends Activity {
                 "    return 'KMSI_CLICKED';" +
                 "  }" +
 
-                // 2) Verifica se o campo de SENHA da Microsoft está visível
                 "  var passInput = document.querySelector('input[name=\"passwd\"], input[type=\"password\"]');" +
                 "  if (visivel(passInput) && PASS.length > 0) {" +
                 "    if (passInput.getAttribute('data-preenchido') !== '1') {" +
@@ -398,7 +442,6 @@ public class MainActivity extends Activity {
                 "    }" +
                 "  }" +
 
-                // 3) Verifica se o campo de E-MAIL da Microsoft ou do Power BI está visível
                 "  var emailInput = document.querySelector('input[name=\"loginfmt\"], input[type=\"email\"], input#email');" +
                 "  if (visivel(emailInput) && USER.length > 0 && !visivel(passInput)) {" +
                 "    if (emailInput.getAttribute('data-preenchido') !== '1') {" +
@@ -412,7 +455,6 @@ public class MainActivity extends Activity {
                 "    }" +
                 "  }" +
 
-                // 4) Caso apareça a lista 'Escolha uma conta' (Pick an account) na Microsoft
                 "  if (USER.length > 0) {" +
                 "    var tiles = document.querySelectorAll('[data-test-id], .table[role=\"button\"]');" +
                 "    for (var i = 0; i < tiles.length; i++) {" +
@@ -429,7 +471,12 @@ public class MainActivity extends Activity {
         webView.evaluateJavascript(js, null);
     }
 
-    private void carregarLinkAtual() {
+    // ------------------------------------------------------------------------------------------
+    // CARREGAMENTO E TROCA SEM TELA DE LOADING
+    // ------------------------------------------------------------------------------------------
+
+    /** Só na abertura do app: carrega direto na frente (ainda não existe painel anterior). */
+    private void carregarPrimeiroLink() {
         if (activityDestroyed || webView == null || playlistLinks.isEmpty()) return;
 
         cancelarTodasAsTarefas();
@@ -443,6 +490,7 @@ public class MainActivity extends Activity {
         webView.loadUrl(playlistLinks.get(currentIndex));
     }
 
+    /** Agenda o início do pré-carregamento do próximo painel (atrás do atual). */
     private void agendarProximaTroca(final long idAtual) {
         if (playlistRunnable != null) {
             handler.removeCallbacks(playlistRunnable);
@@ -451,26 +499,23 @@ public class MainActivity extends Activity {
         playlistRunnable = new Runnable() {
             @Override
             public void run() {
+                playlistRunnable = null;
                 if (activityDestroyed || idAtual != navigationId || emTelaDeLogin) return;
 
                 if (playlistLinks.size() == 1) {
-                    // Se houver apenas 1 link privado, tenta primeiro clicar no botão "Atualizar" interno do Power BI
-                    // para atualizar os visuais sem piscar a tela inteira; ou recarrega a URL.
                     atualizarRelatorioUnicoOuRecarregar();
-                } else if (!playlistLinks.isEmpty()) {
-                    currentIndex = (currentIndex + 1) % playlistLinks.size();
-                    carregarLinkAtual();
+                } else {
+                    iniciarPreload((currentIndex + 1) % playlistLinks.size());
                 }
             }
         };
 
-        handler.postDelayed(playlistRunnable, intervaloMs);
+        // Começa a carregar o próximo um pouco antes do fim do intervalo, para que a troca
+        // aconteça aproximadamente quando o tempo configurado acabar.
+        long espera = Math.max(1000L, intervaloMs - RENDER_DELAY_MS);
+        handler.postDelayed(playlistRunnable, espera);
     }
 
-    /**
-     * Para quando há 1 único link: tenta acionar o botão de "Atualizar visuais" do próprio Power BI
-     * ou recarrega a página mantendo os cookies de login.
-     */
     private void atualizarRelatorioUnicoOuRecarregar() {
         if (webView == null || activityDestroyed) return;
 
@@ -487,20 +532,154 @@ public class MainActivity extends Activity {
                 "  return false;" +
                 "})();";
 
+        final long idAtual = navigationId;
         webView.evaluateJavascript(jsRefresh, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String clicouRefresh) {
+                if (activityDestroyed || idAtual != navigationId) return;
                 if ("true".equals(clicouRefresh)) {
-                    // Conseguiu atualizar por dentro do Power BI sem piscar a tela! Agenda o próximo ciclo.
                     agendarProximaTroca(navigationId);
                 } else {
-                    // Não achou botão interno (ex: modo reportEmbed puro), então recarrega o link
-                    carregarLinkAtual();
+                    // Sem botão interno: carrega o mesmo link atrás e troca (sem piscar)
+                    iniciarPreload(currentIndex);
                 }
             }
         });
     }
 
+    /** Carrega o link indicado no WebView de TRÁS, enquanto o da frente continua congelado. */
+    private void iniciarPreload(int indice) {
+        if (activityDestroyed || webViewBack == null || playlistLinks.isEmpty()) return;
+
+        cancelarTodasAsTarefas();
+
+        navigationId++;
+        targetIndex = indice;
+        pageLoaded = false;
+        retryCount = 0;
+        cssAttempts = 0;
+        fitClicado = false;
+
+        final long idDoPreload = navigationId;
+        timeoutRunnable = new Runnable() {
+            @Override
+            public void run() {
+                timeoutRunnable = null;
+                if (activityDestroyed || idDoPreload != navigationId) return;
+                abandonarPreload();
+            }
+        };
+        handler.postDelayed(timeoutRunnable, PRELOAD_TIMEOUT_MS);
+
+        webViewBack.loadUrl(playlistLinks.get(targetIndex));
+    }
+
+    /** O WebView de trás terminou de carregar: aplica o ajuste visual e agenda a troca. */
+    private void aoTerminarCarregamentoDeTras(String url) {
+        pageLoaded = true;
+        retryCount = 0;
+
+        // Já recebeu resposta; cancela o timeout de carregamento
+        if (timeoutRunnable != null) {
+            handler.removeCallbacks(timeoutRunnable);
+            timeoutRunnable = null;
+        }
+
+        injetarViewportVirtual(webViewBack);
+        agendarAjusteVisual(webViewBack, navigationId);
+
+        if (swapRunnable != null) {
+            handler.removeCallbacks(swapRunnable);
+        }
+
+        final long idDoPreload = navigationId;
+        swapRunnable = new Runnable() {
+            @Override
+            public void run() {
+                swapRunnable = null;
+                if (activityDestroyed || idDoPreload != navigationId || emTelaDeLogin) return;
+
+                trocarFrenteETras();
+
+                // O painel novo já está carregado e ajustado: só reagenda o ciclo
+                agendarProximaTroca(navigationId);
+                if (!usuarioBi.isEmpty()) {
+                    agendarAutoLogin(navigationId);
+                }
+                if (overlayCapturador != null) {
+                    overlayCapturador.requestFocus();
+                }
+            }
+        };
+        handler.postDelayed(swapRunnable, RENDER_DELAY_MS);
+    }
+
+    /** Troca os papéis: o WebView de trás vira a frente (visível) e o antigo vai para trás. */
+    private void trocarFrenteETras() {
+        if (webView == null || webViewBack == null) return;
+
+        if (swapRunnable != null) {
+            handler.removeCallbacks(swapRunnable);
+            swapRunnable = null;
+        }
+        if (timeoutRunnable != null) {
+            handler.removeCallbacks(timeoutRunnable);
+            timeoutRunnable = null;
+        }
+
+        WebView antigaFrente = webView;
+        webView = webViewBack;
+        webViewBack = antigaFrente;
+        currentIndex = targetIndex;
+
+        // Sobe o novo painel na ordem de desenho, mantendo overlay e banner por cima dele
+        webView.bringToFront();
+        overlayCapturador.bringToFront();
+        bannerStatus.bringToFront();
+
+        // O painel antigo vai para trás: para tudo e libera memória
+        webViewBack.setFocusable(false);
+        webViewBack.setFocusableInTouchMode(false);
+        webViewBack.stopLoading();
+        webViewBack.loadUrl("about:blank");
+
+        verificarModoLogin(webView.getUrl());
+    }
+
+    private void abandonarPreload() {
+        if (webViewBack != null) {
+            webViewBack.stopLoading();
+            webViewBack.loadUrl("about:blank");
+        }
+        cancelarTodasAsTarefas();
+        navigationId++;
+        // Mantém o painel atual na tela e tenta o próximo ciclo normalmente
+        agendarProximaTroca(navigationId);
+    }
+
+    private void tratarFalhaDePreload() {
+        if (activityDestroyed || webViewBack == null || retryRunnable != null) return;
+
+        if (retryCount >= MAX_RETRIES) {
+            abandonarPreload();
+            return;
+        }
+
+        final long idDaFalha = navigationId;
+        retryCount++;
+
+        retryRunnable = new Runnable() {
+            @Override
+            public void run() {
+                retryRunnable = null;
+                if (activityDestroyed || webViewBack == null || idDaFalha != navigationId) return;
+                webViewBack.loadUrl(playlistLinks.get(targetIndex));
+            }
+        };
+        handler.postDelayed(retryRunnable, RETRY_DELAY_MS);
+    }
+
+    /** Falha no WebView da frente (primeira abertura / login). */
     private void tratarFalhaDeCarregamento() {
         if (activityDestroyed || pageLoaded || webView == null
                 || retryRunnable != null || retryCount >= MAX_RETRIES) return;
@@ -522,8 +701,12 @@ public class MainActivity extends Activity {
         handler.postDelayed(retryRunnable, RETRY_DELAY_MS);
     }
 
-    private void injetarViewportVirtual() {
-        if (webView == null || activityDestroyed || emTelaDeLogin) return;
+    // ------------------------------------------------------------------------------------------
+    // AJUSTE VISUAL (viewport, CSS, "Ajustar à página") — agora recebe o WebView alvo
+    // ------------------------------------------------------------------------------------------
+
+    private void injetarViewportVirtual(WebView alvo) {
+        if (alvo == null || activityDestroyed) return;
 
         String js =
                 "(function(){" +
@@ -537,11 +720,11 @@ public class MainActivity extends Activity {
                 "  window.dispatchEvent(new Event('resize'));" +
                 "})();";
 
-        webView.evaluateJavascript(js, null);
+        alvo.evaluateJavascript(js, null);
     }
 
-    private void agendarAjusteVisual(final long idDaPagina) {
-        if (activityDestroyed || webView == null || emTelaDeLogin) return;
+    private void agendarAjusteVisual(final WebView alvo, final long idDaPagina) {
+        if (activityDestroyed || alvo == null) return;
 
         if (cssRunnable != null) {
             handler.removeCallbacks(cssRunnable);
@@ -551,14 +734,13 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 cssRunnable = null;
-                if (activityDestroyed || webView == null
-                        || idDaPagina != navigationId || !pageLoaded || emTelaDeLogin) return;
+                if (activityDestroyed || idDaPagina != navigationId || !pageLoaded) return;
 
-                aplicarEstiloEClicarEmAjustar();
+                aplicarEstiloEClicarEmAjustar(alvo);
 
                 cssAttempts++;
                 if (cssAttempts < MAX_CSS_ATTEMPTS) {
-                    agendarAjusteVisual(idDaPagina);
+                    agendarAjusteVisual(alvo, idDaPagina);
                 }
             }
         };
@@ -566,8 +748,8 @@ public class MainActivity extends Activity {
         handler.postDelayed(cssRunnable, CSS_DELAY_MS);
     }
 
-    private void aplicarEstiloEClicarEmAjustar() {
-        if (webView == null || activityDestroyed || emTelaDeLogin) return;
+    private void aplicarEstiloEClicarEmAjustar(WebView alvo) {
+        if (alvo == null || activityDestroyed) return;
 
         final String deveClicar = fitClicado ? "false" : "true";
 
@@ -577,7 +759,6 @@ public class MainActivity extends Activity {
                 "    html, body { margin:0 !important; padding:0 !important;" +
                 "      background:#141923 !important; overflow:hidden !important; }" +
                 "    ::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }" +
-                // Esconde barras inferiores e também menus superiores/laterais de links privados do Power BI
                 "    .logoBar, .statusbar, .pbi-status-bar, .bottomBar," +
                 "    app-header, nav-pane, .appBar, .actionBar, #pbiAppHeader," +
                 "    [class*=\"logoBar\"], [class*=\"statusBar\"], [class*=\"statusbar\"]" +
@@ -607,7 +788,7 @@ public class MainActivity extends Activity {
                 "  return achou;" +
                 "})();";
 
-        webView.evaluateJavascript(js, new ValueCallback<String>() {
+        alvo.evaluateJavascript(js, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String resultado) {
                 if ("true".equals(resultado)) {
@@ -616,6 +797,10 @@ public class MainActivity extends Activity {
             }
         });
     }
+
+    // ------------------------------------------------------------------------------------------
+    // TAREFAS
+    // ------------------------------------------------------------------------------------------
 
     private void cancelarTarefasDePagina() {
         if (retryRunnable != null) {
@@ -629,6 +814,14 @@ public class MainActivity extends Activity {
         if (loginRunnable != null) {
             handler.removeCallbacks(loginRunnable);
             loginRunnable = null;
+        }
+        if (swapRunnable != null) {
+            handler.removeCallbacks(swapRunnable);
+            swapRunnable = null;
+        }
+        if (timeoutRunnable != null) {
+            handler.removeCallbacks(timeoutRunnable);
+            timeoutRunnable = null;
         }
     }
 
@@ -649,7 +842,6 @@ public class MainActivity extends Activity {
     private boolean processarTeclaControle(int tecla, KeyEvent event) {
         if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
 
-        // 1) Botão Voltar 3 vezes seguidas abre as configurações SEMPRE (mesmo em tela de login)
         if (tecla == KeyEvent.KEYCODE_BACK) {
             if (event.getRepeatCount() > 0) {
                 abrirConfiguracoes();
@@ -672,8 +864,6 @@ public class MainActivity extends Activity {
             return true;
         }
 
-        // Se estiver na tela de login da Microsoft, deixa as setas e o OK funcionarem dentro da página
-        // caso a empresa exija clicar em um aprovação de 2 fatores (MFA) na primeira vez!
         if (emTelaDeLogin) {
             if (tecla == KeyEvent.KEYCODE_MENU || tecla == KeyEvent.KEYCODE_SETTINGS) {
                 abrirConfiguracoes();
@@ -682,7 +872,6 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // 2) Fora da tela de login (exibindo o painel): qualquer tecla abre as configurações
         if (tecla == KeyEvent.KEYCODE_DPAD_CENTER
                 || tecla == KeyEvent.KEYCODE_ENTER
                 || tecla == KeyEvent.KEYCODE_NUMPAD_ENTER
@@ -746,20 +935,25 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void destruirWebView(WebView wv) {
+        if (wv == null) return;
+        wv.stopLoading();
+        wv.setWebViewClient(new WebViewClient());
+        wv.loadUrl("about:blank");
+        wv.clearHistory();
+        wv.removeAllViews();
+        wv.destroy();
+    }
+
     @Override
     protected void onDestroy() {
         activityDestroyed = true;
         cancelarTodasAsTarefas();
         handler.removeCallbacksAndMessages(null);
-        if (webView != null) {
-            webView.stopLoading();
-            webView.setWebViewClient(new WebViewClient());
-            webView.loadUrl("about:blank");
-            webView.clearHistory();
-            webView.removeAllViews();
-            webView.destroy();
-            webView = null;
-        }
+        destruirWebView(webView);
+        destruirWebView(webViewBack);
+        webView = null;
+        webViewBack = null;
         super.onDestroy();
     }
 
