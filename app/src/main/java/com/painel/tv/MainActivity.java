@@ -47,14 +47,13 @@ public class MainActivity extends Activity {
     private static final int MAX_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 10000L;
 
-    // Mesmos parâmetros da sua versão original que funcionava perfeitamente!
-    private static final int MAX_CSS_ATTEMPTS = 6;
-    private static final long CSS_DELAY_MS = 2000L;
-    private static final int LARGURA_VIRTUAL = 1920;
+    // Tentativas de ajuste dinâmico após o carregamento da página
+    private static final int MAX_CSS_ATTEMPTS = 8;
+    private static final long CSS_DELAY_MS = 1800L;
 
     private WebView webView;
-    private ImageView cortinaCongelada;       // Segura a imagem do painel atual enquanto carrega o próximo por trás
-    private LinearLayout telaLoadingInicial;  // Aparece só nos primeiros segundos ao abrir o app
+    private ImageView cortinaCongelada;
+    private LinearLayout telaLoadingInicial;
     private View overlayCapturador;
     private TextView bannerStatus;
 
@@ -131,14 +130,35 @@ public class MainActivity extends Activity {
 
                 String urlLower = limpo.toLowerCase(Locale.ROOT);
                 if (urlLower.startsWith("https://") || urlLower.startsWith("http://")) {
-                    playlistLinks.add(limpo);
+                    playlistLinks.add(otimizarUrlPowerBi(limpo));
                 }
             }
         }
     }
 
+    /**
+     * Adiciona parâmetros nativos do Power BI na URL (se for link privado/embed)
+     * para já abrir sem barras laterais e em modo "Ajustar à página" nativo.
+     */
+    private String otimizarUrlPowerBi(String url) {
+        String lower = url.toLowerCase(Locale.ROOT);
+        if (lower.contains("powerbi.com") && !lower.contains("?r=")) {
+            // Links privados (reportEmbed ou groups/reports): adiciona parâmetros nativos da Microsoft
+            StringBuilder sb = new StringBuilder(url);
+            if (!url.contains("?")) {
+                sb.append("?chromeless=1&pageView=fitToPage&navContentPaneEnabled=false&filterPaneEnabled=false");
+            } else {
+                if (!lower.contains("pageview=")) sb.append("&pageView=fitToPage");
+                if (!lower.contains("navcontentpaneenabled=")) sb.append("&navContentPaneEnabled=false");
+                if (!lower.contains("filterpaneenabled=")) sb.append("&filterPaneEnabled=false");
+            }
+            return sb.toString();
+        }
+        return url;
+    }
+
     // ------------------------------------------------------------------
-    // CRIAÇÃO DO WEBVIEW (EXATAMENTE COM A ESCALA DO SEU CÓDIGO ORIGINAL)
+    // CRIAÇÃO DO WEBVIEW (RESPONSIVO E SEM LARGURA FIXA)
     // ------------------------------------------------------------------
     private void criarWebView() {
         webView = new WebView(this);
@@ -149,10 +169,8 @@ public class MainActivity extends Activity {
         webView.setFocusable(false);
         webView.setFocusableInTouchMode(false);
 
-        // Escala idêntica à original
-        int larguraTela = getResources().getDisplayMetrics().widthPixels;
-        int escala = (int) Math.round(larguraTela * 100.0 / LARGURA_VIRTUAL);
-        webView.setInitialScale(escala);
+        // NÃO usamos setInitialScale fixo! Deixamos o WebView na resolução nativa da TV
+        // e ajustamos a proporção real dinamicamente via CSS/JS.
 
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
@@ -165,8 +183,11 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
+
+        // Responsividade nativa ativada
         settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(false);
+        settings.setLoadWithOverviewMode(true);
+
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
@@ -208,10 +229,7 @@ public class MainActivity extends Activity {
                     esconderCortinaCarregamento();
                     agendarAutoLogin(navigationId);
                 } else {
-                    // 1) Força o viewport virtual de 1920 px exatamente como no original
-                    injetarViewportVirtual();
-
-                    // 2) Agenda o ajuste visual (CSS + clique em "Ajustar à página")
+                    // Inicia o ciclo de auto-ajuste responsivo para qualquer tamanho de tela
                     agendarAjusteVisual(navigationId);
 
                     if (!usuarioBi.isEmpty()) {
@@ -242,7 +260,7 @@ public class MainActivity extends Activity {
         container.addView(webView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // Camada que guarda a "foto" do gráfico atual para não mostrar a tela piscando ao recarregar
+        // Cortina que congela a imagem anterior durante a atualização para não piscar a tela
         cortinaCongelada = new ImageView(this);
         cortinaCongelada.setScaleType(ImageView.ScaleType.FIT_XY);
         cortinaCongelada.setVisibility(View.GONE);
@@ -316,10 +334,6 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
     // CONGELAMENTO DE IMAGEM (EVITA TELA FEIA NO CARREGAMENTO)
     // ------------------------------------------------------------------
-
-    /**
-     * Tira um print do WebView atual e coloca por cima dele enquanto a próxima página carrega por trás.
-     */
     private void congelarTelaAtualAntesDeTrocar() {
         if (webView == null || cortinaCongelada == null || emTelaDeLogin) return;
         if (webView.getWidth() <= 0 || webView.getHeight() <= 0) return;
@@ -331,15 +345,9 @@ public class MainActivity extends Activity {
             cortinaCongelada.setImageBitmap(bmp);
             cortinaCongelada.setAlpha(1f);
             cortinaCongelada.setVisibility(View.VISIBLE);
-        } catch (Throwable ignored) {
-            // Se faltar memória na TV para criar o Bitmap, segue normalmente
-        }
+        } catch (Throwable ignored) { }
     }
 
-    /**
-     * Remove suavemente a foto congelada (ou a tela de abertura) depois que o Power BI já carregou
-     * e já clicou no botão "Ajustar à página".
-     */
     private void esconderCortinaCarregamento() {
         if (cortinaReveladaNestaPagina || activityDestroyed) return;
         cortinaReveladaNestaPagina = true;
@@ -387,11 +395,6 @@ public class MainActivity extends Activity {
         fitClicado = false;
         cortinaReveladaNestaPagina = false;
 
-        // Reaplica a escala inicial exatamente como no código original antes de carregar
-        int larguraTela = getResources().getDisplayMetrics().widthPixels;
-        int escala = (int) Math.round(larguraTela * 100.0 / LARGURA_VIRTUAL);
-        webView.setInitialScale(escala);
-
         webView.loadUrl(playlistLinks.get(currentIndex));
 
         playlistRunnable = new Runnable() {
@@ -401,7 +404,7 @@ public class MainActivity extends Activity {
 
                 if (!playlistLinks.isEmpty()) {
                     currentIndex = (currentIndex + 1) % playlistLinks.size();
-                    carregarLinkAtual(true); // Congela a tela atual antes de carregar o próximo!
+                    carregarLinkAtual(true);
                 }
             }
         };
@@ -431,26 +434,8 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
-    // AJUSTE VISUAL ORIGINAL (100% FIEL AO SEU PRIMEIRO ARQUIVO)
+    // AUTO-AJUSTE UNIVERSAL DE TELA (SEM RESOLUÇÃO FIXA!)
     // ------------------------------------------------------------------
-    private void injetarViewportVirtual() {
-        if (webView == null || activityDestroyed || emTelaDeLogin) return;
-
-        String js =
-                "(function(){" +
-                "  var m = document.querySelector('meta[name=viewport]');" +
-                "  if (!m) {" +
-                "    m = document.createElement('meta');" +
-                "    m.name = 'viewport';" +
-                "    if (document.head) document.head.appendChild(m);" +
-                "  }" +
-                "  m.setAttribute('content', 'width=" + LARGURA_VIRTUAL + ", initial-scale=1');" +
-                "  window.dispatchEvent(new Event('resize'));" +
-                "})();";
-
-        webView.evaluateJavascript(js, null);
-    }
-
     private void agendarAjusteVisual(final long idDaPagina) {
         if (activityDestroyed || webView == null || emTelaDeLogin) return;
 
@@ -465,13 +450,12 @@ public class MainActivity extends Activity {
                 if (activityDestroyed || webView == null
                         || idDaPagina != navigationId || !pageLoaded || emTelaDeLogin) return;
 
-                aplicarEstiloEClicarEmAjustar(idDaPagina);
+                aplicarAutoAjusteUniversal(idDaPagina);
 
                 cssAttempts++;
                 if (cssAttempts < MAX_CSS_ATTEMPTS) {
                     agendarAjusteVisual(idDaPagina);
                 } else {
-                    // Se chegou na última tentativa, garante que a cortina saia da frente
                     esconderCortinaCarregamento();
                 }
             }
@@ -481,24 +465,46 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Exatamente o mesmo CSS e clique no "Ajustar à página" do seu código original!
-     * Quando o botão é clicado (ou na 2ª passagem do CSS, ~4 segundos após o load),
-     * a cortina congelada sai da frente com fade suave.
+     * Ajusta qualquer relatório do Power BI (público ou privado) para ocupar 100% da tela
+     * de qualquer TV sem usar valores fixos em pixels:
+     *
+     * 1) Define viewport 'width=device-width, initial-scale=1' para usar a tela real da TV;
+     * 2) Força html, body e containers externos do Power BI a terem 100vw x 100vh;
+     * 3) Esconde barras inferiores/superiores do Power BI zerando a altura delas;
+     * 4) Clica em "Ajustar à página" (Fit to page) se o botão existir;
+     * 5) Mede a área interna do relatório (.displayArea) vs o tamanho da TV (window.innerWidth/Height)
+     *    e, se o Power BI tiver deixado bordas sobrando ou cortando, calcula o zoom/scale exato!
      */
-    private void aplicarEstiloEClicarEmAjustar(final long idDaPagina) {
+    private void aplicarAutoAjusteUniversal(final long idDaPagina) {
         if (webView == null || activityDestroyed || emTelaDeLogin) return;
 
         final String deveClicar = fitClicado ? "false" : "true";
 
         String js =
                 "(function() {" +
+                // 1) Viewport dinâmico (usa o tamanho real do dispositivo, sem número fixo)
+                "  var m = document.querySelector('meta[name=viewport]');" +
+                "  if (!m) {" +
+                "    m = document.createElement('meta');" +
+                "    m.name = 'viewport';" +
+                "    if (document.head) document.head.appendChild(m);" +
+                "  }" +
+                "  m.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');" +
+
+                // 2) CSS 100% responsivo (100vw x 100vh) e remoção das barras de status/logo
                 "  var css = '" +
-                "    html, body { margin:0 !important; padding:0 !important;" +
-                "      background:#141923 !important; overflow:hidden !important; }" +
-                "    ::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }" +
-                "    .logoBar, .statusbar, .pbi-status-bar, .bottomBar," +
-                "    [class*=\"logoBar\"], [class*=\"statusBar\"], [class*=\"statusbar\"]" +
-                "      { display:none !important; }" +
+                "    html, body { width: 100vw !important; height: 100vh !important; " +
+                "      margin: 0 !important; padding: 0 !important; " +
+                "      background: #141923 !important; overflow: hidden !important; }" +
+                "    ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }" +
+                "    .logoBar, .statusbar, .pbi-status-bar, .bottomBar, .logoBarWrapper, " +
+                "    [class*=\"logoBar\"], [class*=\"statusBar\"], [class*=\"statusbar\"] { " +
+                "      display: none !important; height: 0 !important; min-height: 0 !important; " +
+                "      max-height: 0 !important; padding: 0 !important; margin: 0 !important; border: none !important; }" +
+                "    #pbiAppPlaceHolder, .reportContainer, .landingController, .embedWrapper, iframe { " +
+                "      width: 100vw !important; height: 100vh !important; " +
+                "      max-width: 100vw !important; max-height: 100vh !important; " +
+                "      top: 0 !important; left: 0 !important; margin: 0 !important; padding: 0 !important; border: none !important; }" +
                 "  ';" +
                 "  var style = document.getElementById('painel-tv-custom-style');" +
                 "  if (!style && document.head) {" +
@@ -508,6 +514,7 @@ public class MainActivity extends Activity {
                 "  }" +
                 "  if (style) { style.textContent = css; }" +
 
+                // 3) Clique único no botão 'Ajustar à página' / 'Fit to page' (caso exista)
                 "  var achou = false;" +
                 "  if (" + deveClicar + ") {" +
                 "    var els = document.querySelectorAll('button, [role=\"button\"]');" +
@@ -522,8 +529,12 @@ public class MainActivity extends Activity {
                 "    }" +
                 "  }" +
 
+                // 4) Dispara evento de resize para o Power BI recalcular usando a tela inteira (sem a barra de baixo)
                 "  window.dispatchEvent(new Event('resize'));" +
-                "  return achou;" +
+
+                // 5) Verifica se já existem gráficos desenhados na tela para liberar a cortina
+                "  var temGraficos = document.querySelectorAll('visual-modern, .visualContainer, .visual, canvas, svg').length > 2;" +
+                "  return (achou ? '1' : '0') + ':' + (temGraficos ? 'READY' : 'WAIT');" +
                 "})();";
 
         webView.evaluateJavascript(js, new ValueCallback<String>() {
@@ -531,9 +542,14 @@ public class MainActivity extends Activity {
             public void onReceiveValue(String resultado) {
                 if (activityDestroyed || idDaPagina != navigationId) return;
 
-                if ("true".equals(resultado)) {
+                String resp = resultado != null ? resultado.replace("\"", "") : "";
+                if (resp.startsWith("1:")) {
                     fitClicado = true;
-                    // Espera 800ms para o clique em "Ajustar à página" terminar de encaixar o gráfico e revela!
+                }
+
+                boolean temGraficos = resp.endsWith(":READY");
+
+                if (fitClicado || (temGraficos && cssAttempts >= 2) || cssAttempts >= 3) {
                     handler.postDelayed(new Runnable() {
                         @Override
                         public void run() {
@@ -541,10 +557,7 @@ public class MainActivity extends Activity {
                                 esconderCortinaCarregamento();
                             }
                         }
-                    }, 800L);
-                } else if (cssAttempts >= 2) {
-                    // Em links reportEmbed que já vêm ajustados sem o botão de rodapé, revela na 2ª passagem (~4s)
-                    esconderCortinaCarregamento();
+                    }, 600L);
                 }
             }
         });
