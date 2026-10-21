@@ -19,6 +19,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.CookieManager;
+import android.webkit.WebStorage;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -50,8 +52,12 @@ public class SettingsActivity extends Activity {
     private ScrollView scrollView;
     private EditText edLinks;
     private EditText edTempo;
+    private EditText edUsuario;
+    private EditText edSenha;
     private TextView txtStatusPermissao;
+
     private Button btnSalvar;
+    private Button btnLimparSessao;
     private Button btnPermissao;
     private Button btnToggleLauncher;
     private Button btnConfigTv;
@@ -76,19 +82,16 @@ public class SettingsActivity extends Activity {
 
         raiz.addView(criarTexto("Configuração do Painel TV", 26, Color.WHITE));
 
-        // Instrução para configurar pelo celular
         TextView info = criarTexto(
-                "📱 Pelo celular (mesmo Wi-Fi): abra http://" + obterIp() + ":" + PORTA,
+                "📱 Configurar pelo celular (mesmo Wi-Fi): acesse http://" + obterIp() + ":" + PORTA,
                 16, Color.parseColor("#7FD1FF"));
         raiz.addView(info);
 
-        // Status da Permissão de Inicialização
         txtStatusPermissao = criarTexto("", 15, Color.YELLOW);
         raiz.addView(txtStatusPermissao);
 
         // ---- 1. Campo dos links ----
-        raiz.addView(criarTexto("Links do Power BI (um por linha ou separados por vírgula):", 16, Color.LTGRAY));
-
+        raiz.addView(criarTexto("Links do Power BI (públicos ou privados / reportEmbed):", 16, Color.LTGRAY));
         edLinks = criarCampoTexto(
                 prefs.getString("links", ""),
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_VARIATION_URI,
@@ -98,7 +101,6 @@ public class SettingsActivity extends Activity {
 
         // ---- 2. Campo do tempo ----
         raiz.addView(criarTexto("Tempo de cada painel (segundos):", 16, Color.LTGRAY));
-
         edTempo = criarCampoTexto(
                 String.valueOf(prefs.getInt("tempo", TEMPO_PADRAO)),
                 InputType.TYPE_CLASS_NUMBER,
@@ -106,7 +108,26 @@ public class SettingsActivity extends Activity {
         );
         raiz.addView(edTempo);
 
-        // ---- 3. Botão Salvar ----
+        // ---- 3. Campos de Login (Opcional para Links Privados) ----
+        raiz.addView(criarTexto("Login do Power BI / Microsoft 365 (para links privados):", 18, Color.parseColor("#7FD1FF")));
+
+        raiz.addView(criarTexto("E-mail corporativo (ex: usuario@empresa.com.br):", 15, Color.LTGRAY));
+        edUsuario = criarCampoTexto(
+                prefs.getString("usuario", ""),
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+                1
+        );
+        raiz.addView(edUsuario);
+
+        raiz.addView(criarTexto("Senha do Power BI:", 15, Color.LTGRAY));
+        edSenha = criarCampoTexto(
+                prefs.getString("senha", ""),
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                1
+        );
+        raiz.addView(edSenha);
+
+        // ---- 4. Botão Salvar ----
         btnSalvar = criarBotaoTV("1. Salvar e Iniciar Painel", "#2E7D32", "#43A047");
         btnSalvar.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -116,10 +137,19 @@ public class SettingsActivity extends Activity {
         });
         raiz.addView(btnSalvar);
 
+        // ---- 5. Botão Limpar Sessão / Cookies ----
+        btnLimparSessao = criarBotaoTV("Limpar Sessão / Trocar Conta Microsoft", "#E65100", "#FB8C00");
+        btnLimparSessao.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                limparCookiesESessao();
+            }
+        });
+        raiz.addView(btnLimparSessao);
+
         // ---- Seção de Inicialização e Modo Launcher ----
         raiz.addView(criarTexto("Opções do Sistema e Launcher da TV:", 18, Color.parseColor("#7FD1FF")));
 
-        // ---- 4. Botão Permissão de Sobreposição ----
         btnPermissao = criarBotaoTV("2. Permitir Iniciar com a TV (Sobreposição)", "#1565C0", "#1E88E5");
         btnPermissao.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -129,7 +159,6 @@ public class SettingsActivity extends Activity {
         });
         raiz.addView(btnPermissao);
 
-        // ---- 5. Botão Ativar/Desativar Modo Launcher ----
         btnToggleLauncher = criarBotaoTV("", "#6A1B9A", "#8E24AA");
         atualizarTextoBotaoLauncher();
         btnToggleLauncher.setOnClickListener(new View.OnClickListener() {
@@ -140,7 +169,6 @@ public class SettingsActivity extends Activity {
         });
         raiz.addView(btnToggleLauncher);
 
-        // ---- 6. Botão Configurações da TV ----
         btnConfigTv = criarBotaoTV("4. Abrir Configurações da TV (Wi-Fi / Rede / Sistema)", "#37474F", "#546E7A");
         btnConfigTv.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -150,7 +178,6 @@ public class SettingsActivity extends Activity {
         });
         raiz.addView(btnConfigTv);
 
-        // ---- 7. Botão Sair para o Menu Original ----
         btnSairTv = criarBotaoTV("5. Sair para o Menu Original da TV", "#C62828", "#E53935");
         btnSairTv.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -160,7 +187,6 @@ public class SettingsActivity extends Activity {
         });
         raiz.addView(btnSairTv);
 
-        // Configura o ScrollView para NÃO roubar o foco dos botões na TV
         scrollView = new ScrollView(this);
         scrollView.setFillViewport(true);
         scrollView.setFocusable(false);
@@ -169,10 +195,8 @@ public class SettingsActivity extends Activity {
         scrollView.addView(raiz);
         setContentView(scrollView);
 
-        // Amarra a ordem exata das setas CIMA / BAIXO para nunca travar
         configurarOrdemDeNavegacao();
 
-        // Começa com o botão Salvar já selecionado e destacado na tela!
         btnSalvar.post(new Runnable() {
             @Override
             public void run() {
@@ -184,14 +208,14 @@ public class SettingsActivity extends Activity {
         servidor.start();
     }
 
-    /**
-     * Define exatamente para onde o foco vai ao apertar Seta para Cima ou Seta para Baixo.
-     */
     private void configurarOrdemDeNavegacao() {
         View[] ordem = new View[]{
                 edLinks,
                 edTempo,
+                edUsuario,
+                edSenha,
                 btnSalvar,
+                btnLimparSessao,
                 btnPermissao,
                 btnToggleLauncher,
                 btnConfigTv,
@@ -204,21 +228,17 @@ public class SettingsActivity extends Activity {
 
         for (int i = 0; i < ordem.length; i++) {
             View atual = ordem[i];
-            View anterior = ordem[(i - 1 + ordem.length) % ordem.length]; // Loop para o fim se subir no topo
-            View proximo = ordem[(i + 1) % ordem.length];                  // Loop para o topo se descer no fim
+            View anterior = ordem[(i - 1 + ordem.length) % ordem.length];
+            View proximo = ordem[(i + 1) % ordem.length];
 
             atual.setNextFocusUpId(anterior.getId());
             atual.setNextFocusDownId(proximo.getId());
         }
     }
 
-    /**
-     * Cria um botão estilizado para TV que muda de cor, ganha borda branca grossa,
-     * aumenta de tamanho (zoom) e mostra uma seta "▶ " quando está selecionado pelo controle.
-     */
     private Button criarBotaoTV(String textoInicial, final String corNormalHex, final String corFocoHex) {
         final Button b = new Button(this);
-        b.setTag(textoInicial); // Guarda o texto limpo
+        b.setTag(textoInicial);
         b.setText("   " + textoInicial);
         b.setTextColor(Color.WHITE);
         b.setTextSize(17);
@@ -227,7 +247,7 @@ public class SettingsActivity extends Activity {
         b.setPadding(36, 22, 36, 22);
 
         b.setFocusable(true);
-        b.setFocusableInTouchMode(false); // Essencial para TV: clicar com 1 único toque no OK!
+        b.setFocusableInTouchMode(false);
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -235,7 +255,6 @@ public class SettingsActivity extends Activity {
         lp.setMargins(0, 14, 0, 6);
         b.setLayoutParams(lp);
 
-        // Aplica visual inicial (sem foco)
         aplicarEstiloCaixa(b, corNormalHex, false);
 
         b.setOnFocusChangeListener(new View.OnFocusChangeListener() {
@@ -258,12 +277,6 @@ public class SettingsActivity extends Activity {
         return b;
     }
 
-    /**
-     * Cria um EditText preparado para controle remoto de TV:
-     * - Setas Cima/Baixo saem do campo normalmente (não prendem o foco lá dentro).
-     * - Apertar OK abre o teclado virtual da TV.
-     * - Ganha borda branca quando está selecionado.
-     */
     private EditText criarCampoTexto(String valorInicial, int inputType, int minLines) {
         final EditText ed = new EditText(this);
         ed.setInputType(inputType);
@@ -299,7 +312,6 @@ public class SettingsActivity extends Activity {
             }
         });
 
-        // Corrige a "armadilha" do EditText na TV: Cima/Baixo mudam de botão em vez de travar no texto
         ed.setOnKeyListener(new View.OnKeyListener() {
             @Override
             public boolean onKey(View v, int keyCode, KeyEvent event) {
@@ -328,24 +340,18 @@ public class SettingsActivity extends Activity {
         return ed;
     }
 
-    /**
-     * Desenha o fundo arredondado com borda branca brilhante quando selecionado na TV.
-     */
     private void aplicarEstiloCaixa(View view, String corFundoHex, boolean focado) {
         GradientDrawable gd = new GradientDrawable();
         gd.setColor(Color.parseColor(corFundoHex));
         gd.setCornerRadius(14f);
         if (focado) {
-            // Borda branca de 6px super visível na TV
             gd.setStroke(6, Color.WHITE);
         } else {
-            // Borda discreta quando não selecionado
             gd.setStroke(2, Color.parseColor("#44FFFFFF"));
         }
         view.setBackground(gd);
     }
 
-    /** Faz o ScrollView acompanhar o botão selecionado suavemente. */
     private void rolarParaElemento(final View v) {
         if (scrollView == null) return;
         scrollView.post(new Runnable() {
@@ -396,10 +402,12 @@ public class SettingsActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
-    // SALVAR E INICIAR
+    // SALVAR E SESSÃO
     // ------------------------------------------------------------------
     private void salvarEIniciar() {
         String links = edLinks.getText().toString().trim();
+        String usuario = edUsuario.getText().toString().trim();
+        String senha = edSenha.getText().toString(); // Sem trim para não cortar espaços se houver na senha
 
         int tempo;
         try {
@@ -418,10 +426,24 @@ public class SettingsActivity extends Activity {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putString("links", links)
                 .putInt("tempo", tempo)
+                .putString("usuario", usuario)
+                .putString("senha", senha)
                 .apply();
 
         startActivity(new Intent(this, MainActivity.class));
         finish();
+    }
+
+    private void limparCookiesESessao() {
+        CookieManager cm = CookieManager.getInstance();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            cm.removeAllCookies(null);
+            cm.flush();
+        } else {
+            cm.removeAllCookie();
+        }
+        WebStorage.getInstance().deleteAllData();
+        Toast.makeText(this, "Sessão limpa! O Power BI fará um novo login ao iniciar.", Toast.LENGTH_LONG).show();
     }
 
     // ------------------------------------------------------------------
@@ -574,11 +596,12 @@ public class SettingsActivity extends Activity {
     }
 
     private static String escaparHtml(String s) {
+        if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
     }
 
     // ------------------------------------------------------------------
-    // MINI SERVIDOR WEB (configurar pelo celular)
+    // MINI SERVIDOR WEB (configurar pelo celular com Login e Senha)
     // ------------------------------------------------------------------
     private class ServidorLocal extends Thread {
         private ServerSocket serverSocket;
@@ -635,32 +658,43 @@ public class SettingsActivity extends Activity {
 
                 String links = "";
                 String tempo = String.valueOf(TEMPO_PADRAO);
+                String usuario = "";
+                String senha = "";
+
                 for (String par : corpo.split("&")) {
                     String[] kv = par.split("=", 2);
                     if (kv.length < 2) continue;
                     String valor = URLDecoder.decode(kv[1], "UTF-8");
                     if (kv[0].equals("links")) links = valor;
                     if (kv[0].equals("tempo")) tempo = valor;
+                    if (kv[0].equals("usuario")) usuario = valor;
+                    if (kv[0].equals("senha")) senha = valor;
                 }
 
                 final String linksFinal = links.trim();
                 final String tempoFinal = tempo.trim();
+                final String usuarioFinal = usuario.trim();
+                final String senhaFinal = senha;
 
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         edLinks.setText(linksFinal);
                         edTempo.setText(tempoFinal);
+                        edUsuario.setText(usuarioFinal);
+                        edSenha.setText(senhaFinal);
                         salvarEIniciar();
                     }
                 });
 
-                html = montarPagina("Enviado! A TV vai iniciar o painel.", linksFinal, tempoFinal);
+                html = montarPagina("Enviado! A TV vai fazer login e iniciar o painel.", linksFinal, tempoFinal, usuarioFinal, senhaFinal);
             } else {
                 SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
                 html = montarPagina("",
                         p.getString("links", ""),
-                        String.valueOf(p.getInt("tempo", TEMPO_PADRAO)));
+                        String.valueOf(p.getInt("tempo", TEMPO_PADRAO)),
+                        p.getString("usuario", ""),
+                        p.getString("senha", ""));
             }
 
             byte[] bytes = html.getBytes("UTF-8");
@@ -674,20 +708,25 @@ public class SettingsActivity extends Activity {
             saida.flush();
         }
 
-        private String montarPagina(String mensagem, String links, String tempo) {
+        private String montarPagina(String mensagem, String links, String tempo, String usuario, String senha) {
             return "<!DOCTYPE html><html><head><meta charset='utf-8'>"
                     + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
                     + "<title>Painel TV</title></head>"
-                    + "<body style='font-family:sans-serif;padding:16px'>"
+                    + "<body style='font-family:sans-serif;padding:16px;background:#141923;color:#fff'>"
                     + "<h2>Painel TV - Power BI</h2>"
-                    + "<p style='color:green'>" + mensagem + "</p>"
+                    + "<p style='color:#81C784;font-weight:bold'>" + mensagem + "</p>"
                     + "<form method='post' action='/salvar'>"
-                    + "<p>Links (um por linha):</p>"
-                    + "<textarea name='links' rows='8' style='width:100%'>" + escaparHtml(links) + "</textarea>"
+                    + "<p>Links do Power BI (um por linha):</p>"
+                    + "<textarea name='links' rows='6' style='width:100%;padding:8px'>" + escaparHtml(links) + "</textarea>"
                     + "<p>Tempo por painel (segundos):</p>"
-                    + "<input name='tempo' type='number' value='" + escaparHtml(tempo) + "'>"
-                    + "<p><button type='submit' style='padding:12px 24px;font-size:18px'>"
-                    + "Salvar e iniciar</button></p>"
+                    + "<input name='tempo' type='number' style='width:100%;padding:8px' value='" + escaparHtml(tempo) + "'>"
+                    + "<h3>Login Microsoft / Power BI (para links privados)</h3>"
+                    + "<p>E-mail corporativo:</p>"
+                    + "<input name='usuario' type='email' style='width:100%;padding:8px' value='" + escaparHtml(usuario) + "'>"
+                    + "<p>Senha:</p>"
+                    + "<input name='senha' type='password' style='width:100%;padding:8px' value='" + escaparHtml(senha) + "'>"
+                    + "<p style='margin-top:20px'><button type='submit' style='width:100%;padding:14px;font-size:18px;background:#2E7D32;color:#fff;border:none;border-radius:8px'>"
+                    + "Salvar e Iniciar na TV</button></p>"
                     + "</form></body></html>";
         }
     }
