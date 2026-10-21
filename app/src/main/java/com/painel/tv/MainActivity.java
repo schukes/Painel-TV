@@ -9,6 +9,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.Window;
@@ -19,143 +21,96 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Painel TV - Power BI (modo quiosque)
- *
- * TELA DE EXIBIÇÃO: mostra uma playlist de links públicos do Power BI em tela cheia,
- * alternando entre eles a cada X segundos.
- *
- * FLUXO DO APP:
- *  - Se NÃO existem links salvos (primeira vez) -> abre a SettingsActivity.
- *  - Se existem links salvos -> abre direto o painel (esta tela).
- *  - Apertando OK / Enter / Menu no controle remoto -> abre a SettingsActivity
- *    para alterar links ou tempo.
- *
- * VIEWPORT VIRTUAL:
- * O WebView renderiza a página num "monitor virtual" de 1920 px de largura
- * (igual a um monitor Full HD) e depois escala tudo para caber na TV.
- * Assim o Power BI se comporta como no navegador do computador e o relatório
- * aparece inteiro, sem cortes e sem cair no layout "mobile".
- */
 public class MainActivity extends Activity {
 
-    // ------------------------------------------------------------------
-    // CONSTANTES DE CONFIGURAÇÃO
-    // ------------------------------------------------------------------
-
-    // Nome do arquivo de preferências (compartilhado com a SettingsActivity!)
     private static final String PREFS_NAME = "PainelPrefs";
 
-    // Tempo de exibição de cada painel (em segundos)
     private static final int DEFAULT_INTERVAL_SECONDS = 30;
     private static final int MIN_INTERVAL_SECONDS = 10;
     private static final int MAX_INTERVAL_SECONDS = 3600;
 
-    // Tentativas de recarregar a página quando ocorre erro de rede
     private static final int MAX_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 10000L;
 
-    // Quantas vezes o app reaplica o ajuste visual (CSS) depois que a página carrega.
-    // O Power BI monta a tela aos poucos, então repetir ajuda a pegar elementos tardios.
     private static final int MAX_CSS_ATTEMPTS = 6;
     private static final long CSS_DELAY_MS = 2000L;
 
-    // Largura do "monitor virtual" em que o Power BI vai renderizar.
-    // Se na TV sobrar margem ou cortar um pouco, teste valores como 1600 ou 2000:
-    //   - número MENOR  = conteúdo maior (aproxima)
-    //   - número MAIOR  = conteúdo menor (afasta)
     private static final int LARGURA_VIRTUAL = 1920;
 
-    // ------------------------------------------------------------------
-    // ESTADO DO APP
-    // ------------------------------------------------------------------
     private WebView webView;
+    private View overlayCapturador; // Camada invisível que garante o foco do controle remoto
     private final List<String> playlistLinks = new ArrayList<>();
 
-    private int currentIndex = 0;     // posição do link atual na playlist
-    private int retryCount = 0;       // tentativas de recarga após erro
-    private int cssAttempts = 0;      // quantas vezes o ajuste visual já rodou
+    private int currentIndex = 0;
+    private int retryCount = 0;
+    private int cssAttempts = 0;
 
     private long intervaloMs = DEFAULT_INTERVAL_SECONDS * 1000L;
-
-    // Identificador da navegação atual. Cada vez que um link novo é carregado, ele aumenta.
-    // Serve para ignorar tarefas agendadas que pertencem a uma página antiga.
     private long navigationId = 0L;
 
     private boolean activityDestroyed = false;
     private boolean pageLoaded = false;
-
-    // Garante que o botão "Ajustar à página" seja clicado UMA única vez por página.
-    // (Esse botão alterna entre modos; clicar várias vezes desfaz o ajuste.)
     private boolean fitClicado = false;
+
+    // Contador para abrir configurações apertando VOLTAR 3 vezes rápido
+    private int backPressCount = 0;
+    private long lastBackPressTime = 0L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
 
-    private Runnable playlistRunnable; // troca para o próximo link
-    private Runnable retryRunnable;    // tenta recarregar após erro
-    private Runnable cssRunnable;      // aplica o ajuste visual
+    private Runnable playlistRunnable;
+    private Runnable retryRunnable;
+    private Runnable cssRunnable;
 
-    // ------------------------------------------------------------------
-    // CICLO DE VIDA
-    // ------------------------------------------------------------------
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Lê os links e o tempo salvos
         carregarConfiguracoes();
 
-        // PRIMEIRA ABERTURA (ou configuração apagada):
-        // não há links, então abre a tela de configurações e encerra esta tela.
-        // Depois que o usuário salvar, a SettingsActivity chama o painel de novo.
         if (playlistLinks.isEmpty()) {
-            startActivity(new Intent(this, SettingsActivity.class));
-            finish();
+            abrirConfiguracoes();
             return;
         }
 
-        // Já configurado: monta a tela e abre direto o painel
         configurarTela();
         criarWebView();
         carregarLinkAtual();
     }
 
-    /** Tela cheia, sem barra de título e sempre acesa. */
     private void configurarTela() {
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().setFlags(
                 WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN
         );
-        // Impede que a TV apague a tela ou entre em protetor de tela
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         ocultarBarrasSistema();
     }
 
-    /** Lê os links e o tempo de exibição salvos nas SharedPreferences. */
     private void carregarConfiguracoes() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         String rawLinks = prefs.getString("links", "");
         int tempoSegundos = prefs.getInt("tempo", DEFAULT_INTERVAL_SECONDS);
 
-        // Mantém o tempo dentro dos limites permitidos
         tempoSegundos = Math.max(MIN_INTERVAL_SECONDS, Math.min(MAX_INTERVAL_SECONDS, tempoSegundos));
         intervaloMs = tempoSegundos * 1000L;
 
         playlistLinks.clear();
         if (rawLinks != null && !rawLinks.trim().isEmpty()) {
-            // Os links podem estar separados por vírgula ou por quebra de linha
             String[] links = rawLinks.split("[,\\r\\n]+");
             for (String link : links) {
                 String limpo = link.trim();
                 if (limpo.isEmpty()) continue;
 
-                // Só aceita endereços http/https
                 String urlLower = limpo.toLowerCase(Locale.ROOT);
                 if (urlLower.startsWith("https://") || urlLower.startsWith("http://")) {
                     playlistLinks.add(limpo);
@@ -164,23 +119,17 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ------------------------------------------------------------------
-    // CRIAÇÃO E CONFIGURAÇÃO DO WEBVIEW
-    // ------------------------------------------------------------------
     private void criarWebView() {
         webView = new WebView(this);
         webView.setBackgroundColor(Color.parseColor("#141923"));
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        webView.setFocusable(true);
-        webView.setFocusableInTouchMode(true);
 
-        // --- ESCALA ---
-        // Calculamos quanto precisamos "encolher" uma página de 1920 px
-        // para ela ocupar exatamente a largura real da TV.
-        // Exemplo: TV com 1920 px de largura -> escala 100%.
-        //          TV com 1280 px de largura -> escala 67%.
+        // IMPORTANTE: Desativa o foco no WebView para ele NÃO engolir os comandos do controle da TV!
+        webView.setFocusable(false);
+        webView.setFocusableInTouchMode(false);
+
         int larguraTela = getResources().getDisplayMetrics().widthPixels;
         int escala = (int) Math.round(larguraTela * 100.0 / LARGURA_VIRTUAL);
         webView.setInitialScale(escala);
@@ -190,30 +139,22 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
-
-        // useWideViewPort = true  -> o WebView respeita a largura definida pela página (meta viewport)
-        // loadWithOverviewMode = false -> NÃO deixa o WebView "dar zoom out" por conta própria,
-        //                                 pois isso brigava com o setInitialScale.
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(false);
-
-        // Zoom desativado (é uma TV, ninguém vai dar pinça)
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
 
-        // Finge ser um Chrome de computador para o Power BI entregar o layout de desktop
         settings.setUserAgentString(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
 
         webView.setWebViewClient(new WebViewClient() {
-
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 pageLoaded = false;
-                fitClicado = false;          // página nova: o clique em "Ajustar" vale de novo
+                fitClicado = false;
                 cancelarTarefasDePagina();
             }
 
@@ -226,14 +167,15 @@ public class MainActivity extends Activity {
                 retryCount = 0;
                 cssAttempts = 0;
 
-                // 1) Força o viewport virtual de 1920 px
                 injetarViewportVirtual();
-
-                // 2) Agenda o ajuste visual (CSS + clique em "Ajustar à página")
                 agendarAjusteVisual(navigationId);
+
+                // Garante que o foco continue na nossa camada invisível e não no WebView
+                if (overlayCapturador != null) {
+                    overlayCapturador.requestFocus();
+                }
             }
 
-            // Erro de carregamento (Android 6.0 ou mais novo)
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
@@ -242,7 +184,6 @@ public class MainActivity extends Activity {
                 }
             }
 
-            // Erro de carregamento (Android antigo)
             @SuppressWarnings("deprecation")
             @Override
             public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
@@ -253,18 +194,56 @@ public class MainActivity extends Activity {
             }
         });
 
-        setContentView(webView);
+        FrameLayout container = new FrameLayout(this);
+        container.addView(webView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        // Camada transparente por cima do WebView que recebe o foco do controle remoto e cliques
+        overlayCapturador = new View(this);
+        overlayCapturador.setBackgroundColor(Color.TRANSPARENT);
+        overlayCapturador.setFocusable(true);
+        overlayCapturador.setFocusableInTouchMode(true);
+        overlayCapturador.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                abrirConfiguracoes();
+            }
+        });
+        overlayCapturador.setOnKeyListener(new View.OnKeyListener() {
+            @Override
+            public boolean onKey(View v, int keyCode, KeyEvent event) {
+                return processarTeclaControle(keyCode, event);
+            }
+        });
+        container.addView(overlayCapturador, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        final TextView dica = new TextView(this);
+        dica.setText("Aperte OK, Setas ou 3x Voltar para Configurações");
+        dica.setTextColor(Color.WHITE);
+        dica.setTextSize(16);
+        dica.setBackgroundColor(Color.parseColor("#CC000000"));
+        dica.setPadding(24, 12, 24, 12);
+        FrameLayout.LayoutParams lpDica = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.END);
+        lpDica.setMargins(0, 0, 32, 32);
+        container.addView(dica, lpDica);
+
+        setContentView(container);
+        overlayCapturador.requestFocus();
+
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                dica.setVisibility(View.GONE);
+            }
+        }, 10000L);
     }
 
-    // ------------------------------------------------------------------
-    // PLAYLIST: CARREGAR E ALTERNAR LINKS
-    // ------------------------------------------------------------------
-
-    /** Carrega o link atual e agenda a troca para o próximo. */
     private void carregarLinkAtual() {
         if (activityDestroyed || webView == null || playlistLinks.isEmpty()) return;
 
-        // Cancela qualquer tarefa pendente do link anterior
         cancelarTodasAsTarefas();
 
         navigationId++;
@@ -277,11 +256,9 @@ public class MainActivity extends Activity {
 
         webView.loadUrl(playlistLinks.get(currentIndex));
 
-        // Depois do tempo configurado, passa para o próximo link da playlist
         playlistRunnable = new Runnable() {
             @Override
             public void run() {
-                // Se a tela foi fechada ou outro link já foi carregado, ignora
                 if (activityDestroyed || idAtual != navigationId) return;
 
                 if (!playlistLinks.isEmpty()) {
@@ -294,7 +271,6 @@ public class MainActivity extends Activity {
         handler.postDelayed(playlistRunnable, intervaloMs);
     }
 
-    /** Se a página falhar (ex.: sem internet), tenta recarregar algumas vezes. */
     private void tratarFalhaDeCarregamento() {
         if (activityDestroyed || pageLoaded || webView == null
                 || retryRunnable != null || retryCount >= MAX_RETRIES) return;
@@ -306,7 +282,6 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 retryRunnable = null;
-                // Só recarrega se ainda estivermos na mesma navegação e a página não carregou
                 if (activityDestroyed || webView == null
                         || idDaFalha != navigationId || pageLoaded) return;
 
@@ -317,15 +292,6 @@ public class MainActivity extends Activity {
         handler.postDelayed(retryRunnable, RETRY_DELAY_MS);
     }
 
-    // ------------------------------------------------------------------
-    // AJUSTE VISUAL (viewport virtual, CSS e botão "Ajustar à página")
-    // ------------------------------------------------------------------
-
-    /**
-     * Diz à página que ela está num monitor de LARGURA_VIRTUAL pixels.
-     * Combinado com o setInitialScale, isso faz o Power BI desenhar o relatório
-     * como se estivesse num PC Full HD e o WebView reduz tudo para caber na TV.
-     */
     private void injetarViewportVirtual() {
         if (webView == null || activityDestroyed) return;
 
@@ -338,14 +304,12 @@ public class MainActivity extends Activity {
                 "    if (document.head) document.head.appendChild(m);" +
                 "  }" +
                 "  m.setAttribute('content', 'width=" + LARGURA_VIRTUAL + ", initial-scale=1');" +
-                // Avisa o Power BI que o tamanho mudou, para ele recalcular o layout
                 "  window.dispatchEvent(new Event('resize'));" +
                 "})();";
 
         webView.evaluateJavascript(js, null);
     }
 
-    /** Agenda o ajuste visual e repete algumas vezes (o Power BI demora para montar a tela). */
     private void agendarAjusteVisual(final long idDaPagina) {
         if (activityDestroyed || webView == null) return;
 
@@ -357,13 +321,11 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 cssRunnable = null;
-                // Ignora se a página mudou ou ainda não terminou de carregar
                 if (activityDestroyed || webView == null
                         || idDaPagina != navigationId || !pageLoaded) return;
 
                 aplicarEstiloEClicarEmAjustar();
 
-                // Repete até o limite de tentativas
                 cssAttempts++;
                 if (cssAttempts < MAX_CSS_ATTEMPTS) {
                     agendarAjusteVisual(idDaPagina);
@@ -374,31 +336,17 @@ public class MainActivity extends Activity {
         handler.postDelayed(cssRunnable, CSS_DELAY_MS);
     }
 
-    /**
-     * Injeta CSS para limpar a tela e clica (uma única vez) no botão "Ajustar à página".
-     *
-     * O que isso faz:
-     *  - remove margens e barras de rolagem;
-     *  - esconde o rodapé "Microsoft Power BI" e a barra de zoom (best effort:
-     *    se o Power BI mudar os nomes de classe, ajuste os seletores abaixo);
-     *  - procura o botão cujo título/aria-label seja "Ajustar à página" ou
-     *    "Fit to page" e clica nele só uma vez.
-     */
     private void aplicarEstiloEClicarEmAjustar() {
         if (webView == null || activityDestroyed) return;
 
-        // Se já clicamos nesta página, o JS não tenta clicar de novo
         final String deveClicar = fitClicado ? "false" : "true";
 
         String js =
                 "(function() {" +
-
-                // ---------- 1) CSS de limpeza ----------
                 "  var css = '" +
                 "    html, body { margin:0 !important; padding:0 !important;" +
                 "      background:#141923 !important; overflow:hidden !important; }" +
                 "    ::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }" +
-                // Possíveis nomes de classe do rodapé/barra de status do Power BI
                 "    .logoBar, .statusbar, .pbi-status-bar, .bottomBar," +
                 "    [class*=\"logoBar\"], [class*=\"statusBar\"], [class*=\"statusbar\"]" +
                 "      { display:none !important; }" +
@@ -410,15 +358,12 @@ public class MainActivity extends Activity {
                 "    document.head.appendChild(style);" +
                 "  }" +
                 "  if (style) { style.textContent = css; }" +
-
-                // ---------- 2) Clique único em 'Ajustar à página' ----------
                 "  var achou = false;" +
                 "  if (" + deveClicar + ") {" +
                 "    var els = document.querySelectorAll('button, [role=\"button\"]');" +
                 "    for (var i = 0; i < els.length; i++) {" +
                 "      var t = ((els[i].getAttribute('title') || '') + ' ' +" +
                 "               (els[i].getAttribute('aria-label') || '')).toLowerCase();" +
-                // Texto exato, para não clicar em qualquer elemento que tenha 'fit' no nome
                 "      if (t.indexOf('ajustar à página') >= 0 || t.indexOf('fit to page') >= 0) {" +
                 "        els[i].click();" +
                 "        achou = true;" +
@@ -426,28 +371,20 @@ public class MainActivity extends Activity {
                 "      }" +
                 "    }" +
                 "  }" +
-
-                // ---------- 3) Pede ao Power BI para recalcular o layout ----------
                 "  window.dispatchEvent(new Event('resize'));" +
                 "  return achou;" +
                 "})();";
 
-        // O retorno do JS (true/false) diz se o botão foi encontrado e clicado
         webView.evaluateJavascript(js, new ValueCallback<String>() {
             @Override
             public void onReceiveValue(String resultado) {
                 if ("true".equals(resultado)) {
-                    fitClicado = true; // não clica de novo nesta página
+                    fitClicado = true;
                 }
             }
         });
     }
 
-    // ------------------------------------------------------------------
-    // CANCELAMENTO DE TAREFAS AGENDADAS
-    // ------------------------------------------------------------------
-
-    /** Cancela retentativa e ajuste visual (tarefas ligadas à página atual). */
     private void cancelarTarefasDePagina() {
         if (retryRunnable != null) {
             handler.removeCallbacks(retryRunnable);
@@ -459,7 +396,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Cancela tudo, inclusive a troca automática de link. */
     private void cancelarTodasAsTarefas() {
         if (playlistRunnable != null) {
             handler.removeCallbacks(playlistRunnable);
@@ -468,41 +404,70 @@ public class MainActivity extends Activity {
         cancelarTarefasDePagina();
     }
 
-    // ------------------------------------------------------------------
-    // ABRIR CONFIGURAÇÕES PELO CONTROLE REMOTO
-    // ------------------------------------------------------------------
-
-    /** Abre a tela de configurações e fecha o painel (para a playlist). */
     private void abrirConfiguracoes() {
-        startActivity(new Intent(this, SettingsActivity.class));
+        Intent intent = new Intent(this, SettingsActivity.class);
+        startActivity(intent);
         finish();
     }
 
     /**
-     * Intercepta as teclas ANTES de chegarem ao WebView.
-     * (Se usássemos só onKeyDown, o WebView "engoliria" o clique do OK.)
-     *
-     * OK (DPAD_CENTER), Enter ou Menu -> abre as configurações.
+     * Centraliza a detecção de teclas do controle remoto.
      */
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-            int tecla = event.getKeyCode();
-            if (tecla == KeyEvent.KEYCODE_DPAD_CENTER
-                    || tecla == KeyEvent.KEYCODE_ENTER
-                    || tecla == KeyEvent.KEYCODE_MENU) {
+    private boolean processarTeclaControle(int tecla, KeyEvent event) {
+        if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+
+        // 1) Botão Voltar: se apertar 3 vezes seguidas rápido (ou segurar), abre as configurações
+        if (tecla == KeyEvent.KEYCODE_BACK) {
+            if (event.getRepeatCount() > 0) {
                 abrirConfiguracoes();
                 return true;
             }
+            long agora = SystemClock.uptimeMillis();
+            if (agora - lastBackPressTime < 1500) {
+                backPressCount++;
+            } else {
+                backPressCount = 1;
+            }
+            lastBackPressTime = agora;
+
+            if (backPressCount >= 3) {
+                backPressCount = 0;
+                abrirConfiguracoes();
+            } else {
+                Toast.makeText(this, "Aperte VOLTAR mais " + (3 - backPressCount) + "x para Configurações", Toast.LENGTH_SHORT).show();
+            }
+            return true;
+        }
+
+        // 2) Qualquer tecla de confirmação, menu ou setas direcionais abre as configurações
+        if (tecla == KeyEvent.KEYCODE_DPAD_CENTER
+                || tecla == KeyEvent.KEYCODE_ENTER
+                || tecla == KeyEvent.KEYCODE_NUMPAD_ENTER
+                || tecla == KeyEvent.KEYCODE_SPACE
+                || tecla == KeyEvent.KEYCODE_BUTTON_A
+                || tecla == KeyEvent.KEYCODE_MENU
+                || tecla == KeyEvent.KEYCODE_SETTINGS
+                || tecla == KeyEvent.KEYCODE_INFO
+                || tecla == KeyEvent.KEYCODE_GUIDE
+                || tecla == KeyEvent.KEYCODE_DPAD_UP
+                || tecla == KeyEvent.KEYCODE_DPAD_DOWN
+                || tecla == KeyEvent.KEYCODE_DPAD_LEFT
+                || tecla == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            abrirConfiguracoes();
+            return true;
+        }
+
+        return false;
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (processarTeclaControle(event.getKeyCode(), event)) {
+            return true;
         }
         return super.dispatchKeyEvent(event);
     }
 
-    // ------------------------------------------------------------------
-    // MODO QUIOSQUE (barras do sistema e botão Voltar)
-    // ------------------------------------------------------------------
-
-    /** Esconde a barra de status e a de navegação (modo imersivo). */
     private void ocultarBarrasSistema() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
             getWindow().getDecorView().setSystemUiVisibility(
@@ -516,24 +481,29 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Sempre que a janela recupera o foco, esconde as barras de novo
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus && !activityDestroyed && webView != null) ocultarBarrasSistema();
+        if (hasFocus && !activityDestroyed && webView != null) {
+            ocultarBarrasSistema();
+            if (overlayCapturador != null) overlayCapturador.requestFocus();
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (!activityDestroyed && webView != null) ocultarBarrasSistema();
+        if (!activityDestroyed && webView != null) {
+            ocultarBarrasSistema();
+            if (overlayCapturador != null) overlayCapturador.requestFocus();
+        }
     }
 
-    // Libera tudo ao fechar o app, evitando vazamento de memória
     @Override
     protected void onDestroy() {
         activityDestroyed = true;
         cancelarTodasAsTarefas();
+        handler.removeCallbacksAndMessages(null);
         if (webView != null) {
             webView.stopLoading();
             webView.setWebViewClient(new WebViewClient());
@@ -546,15 +516,8 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    // Bloqueia o botão Voltar do controle remoto
     @Override
     public void onBackPressed() {
-        // Não faz nada de propósito (modo quiosque)
-    }
-
-    @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) return true;
-        return super.onKeyDown(keyCode, event);
+        // Tratado no processarTeclaControle (3 cliques para abrir configurações)
     }
 }
