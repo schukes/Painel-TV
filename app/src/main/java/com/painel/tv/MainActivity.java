@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -23,8 +24,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
-import android.widget.ProgressBar;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -45,19 +47,14 @@ public class MainActivity extends Activity {
     private static final int MAX_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 10000L;
 
-    // Verificações de prontidão do relatório em segundo plano
-    private static final int MAX_CHECK_ATTEMPTS = 12; // Até ~18s esperando os gráficos desenharem em background
-    private static final long CHECK_DELAY_MS = 1500L;
-
+    // Mesmos parâmetros da sua versão original que funcionava perfeitamente!
+    private static final int MAX_CSS_ATTEMPTS = 6;
+    private static final long CSS_DELAY_MS = 2000L;
     private static final int LARGURA_VIRTUAL = 1920;
 
-    // DUPLO BUFFER: dois WebViews para carregar em segundo plano sem piscar a tela!
-    private WebView webViewA;
-    private WebView webViewB;
-    private WebView webViewVisivel;   // O que está aparecendo na TV agora
-    private WebView webViewCarregando; // O que está carregando escondido atrás
-
-    private LinearLayout telaLoadingInicial; // Só aparece no 1º carregamento ao abrir o app
+    private WebView webView;
+    private ImageView cortinaCongelada;       // Segura a imagem do painel atual enquanto carrega o próximo por trás
+    private LinearLayout telaLoadingInicial;  // Aparece só nos primeiros segundos ao abrir o app
     private View overlayCapturador;
     private TextView bannerStatus;
 
@@ -68,7 +65,7 @@ public class MainActivity extends Activity {
 
     private int currentIndex = 0;
     private int retryCount = 0;
-    private int checkAttempts = 0;
+    private int cssAttempts = 0;
 
     private long intervaloMs = DEFAULT_INTERVAL_SECONDS * 1000L;
     private long navigationId = 0L;
@@ -77,7 +74,7 @@ public class MainActivity extends Activity {
     private boolean pageLoaded = false;
     private boolean fitClicado = false;
     private boolean emTelaDeLogin = false;
-    private boolean primeiropainelExibido = false;
+    private boolean cortinaReveladaNestaPagina = false;
 
     private int backPressCount = 0;
     private long lastBackPressTime = 0L;
@@ -86,7 +83,7 @@ public class MainActivity extends Activity {
 
     private Runnable playlistRunnable;
     private Runnable retryRunnable;
-    private Runnable checkReadyRunnable;
+    private Runnable cssRunnable;
     private Runnable loginRunnable;
 
     @Override
@@ -101,8 +98,8 @@ public class MainActivity extends Activity {
         }
 
         configurarTela();
-        criarInterfaceDuploBuffer();
-        iniciarCarregamentoEmSegundoPlano();
+        criarWebView();
+        carregarLinkAtual(false);
     }
 
     private void configurarTela() {
@@ -122,7 +119,7 @@ public class MainActivity extends Activity {
         usuarioBi = prefs.getString("usuario", "");
         senhaBi = prefs.getString("senha", "");
 
-        tempoSegundos = Math.max(MIN_INTERVAL_SECONDS, Math.min(TEMPO_MAX_PERMITIDO(), tempoSegundos));
+        tempoSegundos = Math.max(MIN_INTERVAL_SECONDS, Math.min(MAX_INTERVAL_SECONDS, tempoSegundos));
         intervaloMs = tempoSegundos * 1000L;
 
         playlistLinks.clear();
@@ -140,47 +137,132 @@ public class MainActivity extends Activity {
         }
     }
 
-    private int TEMPO_MAX_PERMITIDO() {
-        return MAX_INTERVAL_SECONDS;
-    }
+    // ------------------------------------------------------------------
+    // CRIAÇÃO DO WEBVIEW (EXATAMENTE COM A ESCALA DO SEU CÓDIGO ORIGINAL)
+    // ------------------------------------------------------------------
+    private void criarWebView() {
+        webView = new WebView(this);
+        webView.setBackgroundColor(Color.parseColor("#141923"));
+        webView.setVerticalScrollBarEnabled(false);
+        webView.setHorizontalScrollBarEnabled(false);
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        webView.setFocusable(false);
+        webView.setFocusableInTouchMode(false);
 
-    // ------------------------------------------------------------------
-    // CRIAÇÃO DOS DOIS WEBVIEWS (DUPLO BUFFER)
-    // ------------------------------------------------------------------
-    private void criarInterfaceDuploBuffer() {
+        // Escala idêntica à original
+        int larguraTela = getResources().getDisplayMetrics().widthPixels;
+        int escala = (int) Math.round(larguraTela * 100.0 / LARGURA_VIRTUAL);
+        webView.setInitialScale(escala);
+
+        CookieManager cookieManager = CookieManager.getInstance();
+        cookieManager.setAcceptCookie(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            cookieManager.setAcceptThirdPartyCookies(webView, true);
+        }
+
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(false);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+
+        settings.setUserAgentString(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                pageLoaded = false;
+                fitClicado = false;
+                cortinaReveladaNestaPagina = false;
+                cancelarTarefasDePagina();
+                verificarModoLogin(url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                if (activityDestroyed || view != webView) return;
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    CookieManager.getInstance().flush();
+                }
+
+                pageLoaded = true;
+                retryCount = 0;
+                cssAttempts = 0;
+
+                verificarModoLogin(url);
+
+                if (emTelaDeLogin) {
+                    if (playlistRunnable != null) {
+                        handler.removeCallbacks(playlistRunnable);
+                    }
+                    esconderCortinaCarregamento();
+                    agendarAutoLogin(navigationId);
+                } else {
+                    // 1) Força o viewport virtual de 1920 px exatamente como no original
+                    injetarViewportVirtual();
+
+                    // 2) Agenda o ajuste visual (CSS + clique em "Ajustar à página")
+                    agendarAjusteVisual(navigationId);
+
+                    if (!usuarioBi.isEmpty()) {
+                        agendarAutoLogin(navigationId);
+                    }
+                }
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
+                    tratarFalhaDeCarregamento();
+                }
+            }
+
+            @SuppressWarnings("deprecation")
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                super.onReceivedError(view, errorCode, description, failingUrl);
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                    tratarFalhaDeCarregamento();
+                }
+            }
+        });
+
         FrameLayout container = new FrameLayout(this);
-        container.setBackgroundColor(Color.parseColor("#141923"));
-
-        webViewA = criarInstanciaWebView();
-        webViewB = criarInstanciaWebView();
-
-        // No início, A é o que vai carregar primeiro, B fica de reserva
-        webViewVisivel = webViewB;
-        webViewCarregando = webViewA;
-
-        webViewA.setAlpha(0f);
-        webViewB.setAlpha(0f);
-
-        container.addView(webViewB, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        container.addView(webViewA, new FrameLayout.LayoutParams(
+        container.addView(webView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // Tela escura elegante apenas para o PRIMEIRO carregamento ao ligar a TV
+        // Camada que guarda a "foto" do gráfico atual para não mostrar a tela piscando ao recarregar
+        cortinaCongelada = new ImageView(this);
+        cortinaCongelada.setScaleType(ImageView.ScaleType.FIT_XY);
+        cortinaCongelada.setVisibility(View.GONE);
+        container.addView(cortinaCongelada, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        // Tela escura elegante apenas na primeira abertura do app
         telaLoadingInicial = new LinearLayout(this);
         telaLoadingInicial.setOrientation(LinearLayout.VERTICAL);
         telaLoadingInicial.setGravity(Gravity.CENTER);
         telaLoadingInicial.setBackgroundColor(Color.parseColor("#141923"));
 
         ProgressBar spinner = new ProgressBar(this);
-        telaLoadingInicial.addView(spinner, new LinearLayout.LayoutParams(100, 100));
+        telaLoadingInicial.addView(spinner, new LinearLayout.LayoutParams(90, 90));
 
         TextView txtCarregando = new TextView(this);
-        txtCarregando.setText("Preparando Painel Power BI...");
+        txtCarregando.setText("Carregando Painel...");
         txtCarregando.setTextColor(Color.WHITE);
-        txtCarregando.setTextSize(20);
-        txtCarregando.setPadding(0, 32, 0, 0);
-        txtCarregando.setGravity(Gravity.CENTER);
+        txtCarregando.setTextSize(18);
+        txtCarregando.setPadding(0, 28, 0, 0);
         telaLoadingInicial.addView(txtCarregando);
 
         container.addView(telaLoadingInicial, new FrameLayout.LayoutParams(
@@ -231,287 +313,245 @@ public class MainActivity extends Activity {
         }, 10000L);
     }
 
-    private WebView criarInstanciaWebView() {
-        WebView wv = new WebView(this);
-        wv.setBackgroundColor(Color.parseColor("#141923"));
-        wv.setVerticalScrollBarEnabled(false);
-        wv.setHorizontalScrollBarEnabled(false);
-        wv.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        wv.setFocusable(false);
-        wv.setFocusableInTouchMode(false);
-
-        int larguraTela = getResources().getDisplayMetrics().widthPixels;
-        int escala = (int) Math.round(larguraTela * 100.0 / LARGURA_VIRTUAL);
-        wv.setInitialScale(escala);
-
-        CookieManager cookieManager = CookieManager.getInstance();
-        cookieManager.setAcceptCookie(true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            cookieManager.setAcceptThirdPartyCookies(wv, true);
-        }
-
-        WebSettings settings = wv.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(false);
-        settings.setSupportZoom(false);
-        settings.setBuiltInZoomControls(false);
-        settings.setDisplayZoomControls(false);
-
-        settings.setUserAgentString(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
-
-        wv.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                super.onPageStarted(view, url, favicon);
-                if (view != webViewCarregando) return;
-
-                pageLoaded = false;
-                fitClicado = false;
-                cancelarTarefasDePagina();
-                verificarModoLogin(url);
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                if (activityDestroyed || view != webViewCarregando) return;
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    CookieManager.getInstance().flush();
-                }
-
-                pageLoaded = true;
-                retryCount = 0;
-                checkAttempts = 0;
-
-                verificarModoLogin(url);
-
-                if (emTelaDeLogin) {
-                    if (playlistRunnable != null) {
-                        handler.removeCallbacks(playlistRunnable);
-                    }
-                    agendarAutoLogin(navigationId);
-                } else {
-                    // Página terminou o HTML inicial: injeta o viewport e começa a preparar os gráficos escondido!
-                    injetarViewportVirtual(webViewCarregando);
-                    if (!usuarioBi.isEmpty()) {
-                        agendarAutoLogin(navigationId);
-                    }
-                    verificarSePainelEstaProntoParaExibir(navigationId);
-                }
-            }
-
-            @Override
-            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                super.onReceivedError(view, request, error);
-                if (view == webViewCarregando && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
-                    tratarFalhaDeCarregamento();
-                }
-            }
-
-            @SuppressWarnings("deprecation")
-            @Override
-            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                super.onReceivedError(view, errorCode, description, failingUrl);
-                if (view == webViewCarregando && Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-                    tratarFalhaDeCarregamento();
-                }
-            }
-        });
-
-        return wv;
-    }
-
     // ------------------------------------------------------------------
-    // TRANSIÇÃO SUAVE E PREPARAÇÃO EM SEGUNDO PLANO
+    // CONGELAMENTO DE IMAGEM (EVITA TELA FEIA NO CARREGAMENTO)
     // ------------------------------------------------------------------
 
     /**
-     * Inicia o carregamento do próximo link no WebView que está OCULTO (alpha 0),
-     * mantendo o WebView atual visível e congelado na tela para o usuário não ver o carregamento!
+     * Tira um print do WebView atual e coloca por cima dele enquanto a próxima página carrega por trás.
      */
-    private void iniciarCarregamentoEmSegundoPlano() {
-        if (activityDestroyed || playlistLinks.isEmpty()) return;
+    private void congelarTelaAtualAntesDeTrocar() {
+        if (webView == null || cortinaCongelada == null || emTelaDeLogin) return;
+        if (webView.getWidth() <= 0 || webView.getHeight() <= 0) return;
+
+        try {
+            Bitmap bmp = Bitmap.createBitmap(webView.getWidth(), webView.getHeight(), Bitmap.Config.RGB_565);
+            Canvas canvas = new Canvas(bmp);
+            webView.draw(canvas);
+            cortinaCongelada.setImageBitmap(bmp);
+            cortinaCongelada.setAlpha(1f);
+            cortinaCongelada.setVisibility(View.VISIBLE);
+        } catch (Throwable ignored) {
+            // Se faltar memória na TV para criar o Bitmap, segue normalmente
+        }
+    }
+
+    /**
+     * Remove suavemente a foto congelada (ou a tela de abertura) depois que o Power BI já carregou
+     * e já clicou no botão "Ajustar à página".
+     */
+    private void esconderCortinaCarregamento() {
+        if (cortinaReveladaNestaPagina || activityDestroyed) return;
+        cortinaReveladaNestaPagina = true;
+
+        if (telaLoadingInicial != null && telaLoadingInicial.getVisibility() == View.VISIBLE) {
+            telaLoadingInicial.animate().alpha(0f).setDuration(500).withEndAction(new Runnable() {
+                @Override
+                public void run() {
+                    if (telaLoadingInicial != null) telaLoadingInicial.setVisibility(View.GONE);
+                }
+            }).start();
+        }
+
+        if (cortinaCongelada != null && cortinaCongelada.getVisibility() == View.VISIBLE) {
+            cortinaCongelada.animate().alpha(0f).setDuration(500).withEndAction(new Runnable() {
+                @Override
+                public void run() {
+                    if (cortinaCongelada != null) {
+                        cortinaCongelada.setVisibility(View.GONE);
+                        cortinaCongelada.setImageBitmap(null);
+                    }
+                }
+            }).start();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // PLAYLIST E RECARGA
+    // ------------------------------------------------------------------
+    private void carregarLinkAtual(boolean congelarAnterior) {
+        if (activityDestroyed || webView == null || playlistLinks.isEmpty()) return;
 
         cancelarTodasAsTarefas();
 
-        navigationId++;
-        pageLoaded = false;
-        retryCount = 0;
-        checkAttempts = 0;
-        fitClicado = false;
-
-        // Garante que o WebView que vai carregar esteja invisível atrás do atual
-        webViewCarregando.setAlpha(0f);
-        webViewCarregando.loadUrl(playlistLinks.get(currentIndex));
-    }
-
-    /**
-     * Roda em segundo plano no WebView oculto:
-     * 1) Limpa barras do Power BI com CSS;
-     * 2) Clica em "Ajustar à página";
-     * 3) Verifica se os visuais/gráficos do Power BI já renderizaram e se os spinners de loading sumiram.
-     * Só quando está bonito (ou após o limite de segurança), faz o Fade-In para a TV!
-     */
-    private void verificarSePainelEstaProntoParaExibir(final long idDaPagina) {
-        if (activityDestroyed || webViewCarregando == null || emTelaDeLogin) return;
-
-        if (checkReadyRunnable != null) {
-            handler.removeCallbacks(checkReadyRunnable);
+        if (congelarAnterior) {
+            congelarTelaAtualAntesDeTrocar();
         }
 
-        checkReadyRunnable = new Runnable() {
+        navigationId++;
+        final long idAtual = navigationId;
+
+        pageLoaded = false;
+        retryCount = 0;
+        cssAttempts = 0;
+        fitClicado = false;
+        cortinaReveladaNestaPagina = false;
+
+        // Reaplica a escala inicial exatamente como no código original antes de carregar
+        int larguraTela = getResources().getDisplayMetrics().widthPixels;
+        int escala = (int) Math.round(larguraTela * 100.0 / LARGURA_VIRTUAL);
+        webView.setInitialScale(escala);
+
+        webView.loadUrl(playlistLinks.get(currentIndex));
+
+        playlistRunnable = new Runnable() {
             @Override
             public void run() {
-                checkReadyRunnable = null;
-                if (activityDestroyed || webViewCarregando == null
-                        || idDaPagina != navigationId || !pageLoaded || emTelaDeLogin) return;
+                if (activityDestroyed || idAtual != navigationId || emTelaDeLogin) return;
 
-                checkAttempts++;
-                final String deveClicar = fitClicado ? "false" : "true";
-
-                String js =
-                        "(function() {" +
-                        // 1) Aplica o CSS que limpa margens e esconde barras e logos de carregamento feios
-                        "  var css = '" +
-                        "    html, body { margin:0 !important; padding:0 !important;" +
-                        "      background:#141923 !important; overflow:hidden !important; }" +
-                        "    ::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }" +
-                        "    .logoBar, .statusbar, .pbi-status-bar, .bottomBar," +
-                        "    app-header, nav-pane, .appBar, .actionBar, #pbiAppHeader," +
-                        "    [class*=\"logoBar\"], [class*=\"statusBar\"], [class*=\"statusbar\"]" +
-                        "      { display:none !important; }" +
-                        "  ';" +
-                        "  var style = document.getElementById('painel-tv-custom-style');" +
-                        "  if (!style && document.head) {" +
-                        "    style = document.createElement('style');" +
-                        "    style.id = 'painel-tv-custom-style';" +
-                        "    document.head.appendChild(style);" +
-                        "  }" +
-                        "  if (style) { style.textContent = css; }" +
-
-                        // 2) Clica uma única vez em 'Ajustar à página'
-                        "  var clicouFit = false;" +
-                        "  if (" + deveClicar + ") {" +
-                        "    var els = document.querySelectorAll('button, [role=\"button\"]');" +
-                        "    for (var i = 0; i < els.length; i++) {" +
-                        "      var t = ((els[i].getAttribute('title') || '') + ' ' +" +
-                        "               (els[i].getAttribute('aria-label') || '')).toLowerCase();" +
-                        "      if (t.indexOf('ajustar à página') >= 0 || t.indexOf('fit to page') >= 0) {" +
-                        "        els[i].click();" +
-                        "        clicouFit = true;" +
-                        "        break;" +
-                        "      }" +
-                        "    }" +
-                        "  }" +
-                        "  window.dispatchEvent(new Event('resize'));" +
-
-                        // 3) Verifica se os gráficos do Power BI já apareceram na tela e se o spinner principal sumiu
-                        "  var temGraficos = document.querySelectorAll('visual-modern, .visualContainer, .visual, canvas, svg').length > 2;" +
-                        "  var carregandoSpinner = document.querySelector('.pbi-svg-loading, .spinner, .loading-spinner, #pbi-svg-loading');" +
-                        "  var spinnerVisivel = carregandoSpinner && carregandoSpinner.offsetParent !== null;" +
-                        "  var pronto = temGraficos && !spinnerVisivel;" +
-                        "  return (clicouFit ? '1' : '0') + ':' + (pronto ? 'READY' : 'WAIT');" +
-                        "})();";
-
-                webViewCarregando.evaluateJavascript(js, new ValueCallback<String>() {
-                    @Override
-                    public void onReceiveValue(String valor) {
-                        if (activityDestroyed || idDaPagina != navigationId) return;
-
-                        String resp = valor != null ? valor.replace("\"", "") : "";
-                        if (resp.startsWith("1:")) {
-                            fitClicado = true;
-                        }
-
-                        boolean relatorioPronto = resp.endsWith(":READY");
-
-                        // Esperamos pelo menos 2 ciclos (3 segundos) para o "Ajustar à página" assentar
-                        // e trocamos assim que os gráficos estiverem prontos (ou se atingir o tempo máximo)
-                        if ((relatorioPronto && checkAttempts >= 2) || checkAttempts >= MAX_CHECK_ATTEMPTS) {
-                            revelarNovoPainelComFade(idDaPagina);
-                        } else {
-                            verificarSePainelEstaProntoParaExibir(idDaPagina);
-                        }
-                    }
-                });
+                if (!playlistLinks.isEmpty()) {
+                    currentIndex = (currentIndex + 1) % playlistLinks.size();
+                    carregarLinkAtual(true); // Congela a tela atual antes de carregar o próximo!
+                }
             }
         };
 
-        handler.postDelayed(checkReadyRunnable, CHECK_DELAY_MS);
+        handler.postDelayed(playlistRunnable, intervaloMs);
     }
 
-    /**
-     * Faz a troca suave (Crossfade) entre o painel antigo e o painel novo já 100% carregado!
-     */
-    private void revelarNovoPainelComFade(final long idDaPagina) {
-        if (activityDestroyed || idDaPagina != navigationId) return;
+    private void tratarFalhaDeCarregamento() {
+        if (activityDestroyed || pageLoaded || webView == null
+                || retryRunnable != null || retryCount >= MAX_RETRIES) return;
 
-        final WebView novoVisivel = webViewCarregando;
-        final WebView antigoVisivel = webViewVisivel;
+        final long idDaFalha = navigationId;
+        retryCount++;
 
-        // Traz o WebView recém-carregado para a frente com transição suave de 600ms
-        novoVisivel.bringToFront();
-        if (overlayCapturador != null) overlayCapturador.bringToFront();
-        if (bannerStatus != null) bannerStatus.bringToFront();
-
-        novoVisivel.animate()
-                .alpha(1f)
-                .setDuration(600)
-                .withEndAction(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (activityDestroyed) return;
-                        antigoVisivel.setAlpha(0f);
-
-                        // Esconde a tela de loading inicial (se ainda estava visível na 1ª abertura)
-                        if (!primeiropainelExibido && telaLoadingInicial != null) {
-                            primeiropainelExibido = true;
-                            telaLoadingInicial.animate().alpha(0f).setDuration(400).withEndAction(new Runnable() {
-                                @Override
-                                public void run() {
-                                    telaLoadingInicial.setVisibility(View.GONE);
-                                }
-                            }).start();
-                        }
-
-                        if (!emTelaDeLogin && overlayCapturador != null) {
-                            overlayCapturador.requestFocus();
-                        }
-                    }
-                }).start();
-
-        // Inverte os papéis para o próximo ciclo da playlist!
-        webViewVisivel = novoVisivel;
-        webViewCarregando = antigoVisivel;
-
-        // Continua aplicando o CSS mais 2 vezes no painel visível caso algum gráfico atrase
-        aplicarReforcoCssPosExibicao(novoVisivel, 2);
-
-        // Agenda a contagem de tempo (ex: 30s) a partir de AGORA (que o painel realmente apareceu!)
-        agendarProximaTroca(idDaPagina);
-    }
-
-    private void aplicarReforcoCssPosExibicao(final WebView alvo, final int restantes) {
-        if (restantes <= 0 || activityDestroyed || alvo == null) return;
-        handler.postDelayed(new Runnable() {
+        retryRunnable = new Runnable() {
             @Override
             public void run() {
-                if (activityDestroyed || alvo != webViewVisivel || emTelaDeLogin) return;
-                injetarViewportVirtual(alvo);
-                aplicarReforcoCssPosExibicao(alvo, restantes - 1);
+                retryRunnable = null;
+                if (activityDestroyed || webView == null
+                        || idDaFalha != navigationId || pageLoaded) return;
+
+                webView.loadUrl(playlistLinks.get(currentIndex));
             }
-        }, 2500L);
+        };
+
+        handler.postDelayed(retryRunnable, RETRY_DELAY_MS);
     }
 
     // ------------------------------------------------------------------
-    // LOGIN AUTOMÁTICO E PLAYLIST
+    // AJUSTE VISUAL ORIGINAL (100% FIEL AO SEU PRIMEIRO ARQUIVO)
+    // ------------------------------------------------------------------
+    private void injetarViewportVirtual() {
+        if (webView == null || activityDestroyed || emTelaDeLogin) return;
+
+        String js =
+                "(function(){" +
+                "  var m = document.querySelector('meta[name=viewport]');" +
+                "  if (!m) {" +
+                "    m = document.createElement('meta');" +
+                "    m.name = 'viewport';" +
+                "    if (document.head) document.head.appendChild(m);" +
+                "  }" +
+                "  m.setAttribute('content', 'width=" + LARGURA_VIRTUAL + ", initial-scale=1');" +
+                "  window.dispatchEvent(new Event('resize'));" +
+                "})();";
+
+        webView.evaluateJavascript(js, null);
+    }
+
+    private void agendarAjusteVisual(final long idDaPagina) {
+        if (activityDestroyed || webView == null || emTelaDeLogin) return;
+
+        if (cssRunnable != null) {
+            handler.removeCallbacks(cssRunnable);
+        }
+
+        cssRunnable = new Runnable() {
+            @Override
+            public void run() {
+                cssRunnable = null;
+                if (activityDestroyed || webView == null
+                        || idDaPagina != navigationId || !pageLoaded || emTelaDeLogin) return;
+
+                aplicarEstiloEClicarEmAjustar(idDaPagina);
+
+                cssAttempts++;
+                if (cssAttempts < MAX_CSS_ATTEMPTS) {
+                    agendarAjusteVisual(idDaPagina);
+                } else {
+                    // Se chegou na última tentativa, garante que a cortina saia da frente
+                    esconderCortinaCarregamento();
+                }
+            }
+        };
+
+        handler.postDelayed(cssRunnable, CSS_DELAY_MS);
+    }
+
+    /**
+     * Exatamente o mesmo CSS e clique no "Ajustar à página" do seu código original!
+     * Quando o botão é clicado (ou na 2ª passagem do CSS, ~4 segundos após o load),
+     * a cortina congelada sai da frente com fade suave.
+     */
+    private void aplicarEstiloEClicarEmAjustar(final long idDaPagina) {
+        if (webView == null || activityDestroyed || emTelaDeLogin) return;
+
+        final String deveClicar = fitClicado ? "false" : "true";
+
+        String js =
+                "(function() {" +
+                "  var css = '" +
+                "    html, body { margin:0 !important; padding:0 !important;" +
+                "      background:#141923 !important; overflow:hidden !important; }" +
+                "    ::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }" +
+                "    .logoBar, .statusbar, .pbi-status-bar, .bottomBar," +
+                "    [class*=\"logoBar\"], [class*=\"statusBar\"], [class*=\"statusbar\"]" +
+                "      { display:none !important; }" +
+                "  ';" +
+                "  var style = document.getElementById('painel-tv-custom-style');" +
+                "  if (!style && document.head) {" +
+                "    style = document.createElement('style');" +
+                "    style.id = 'painel-tv-custom-style';" +
+                "    document.head.appendChild(style);" +
+                "  }" +
+                "  if (style) { style.textContent = css; }" +
+
+                "  var achou = false;" +
+                "  if (" + deveClicar + ") {" +
+                "    var els = document.querySelectorAll('button, [role=\"button\"]');" +
+                "    for (var i = 0; i < els.length; i++) {" +
+                "      var t = ((els[i].getAttribute('title') || '') + ' ' +" +
+                "               (els[i].getAttribute('aria-label') || '')).toLowerCase();" +
+                "      if (t.indexOf('ajustar à página') >= 0 || t.indexOf('fit to page') >= 0) {" +
+                "        els[i].click();" +
+                "        achou = true;" +
+                "        break;" +
+                "      }" +
+                "    }" +
+                "  }" +
+
+                "  window.dispatchEvent(new Event('resize'));" +
+                "  return achou;" +
+                "})();";
+
+        webView.evaluateJavascript(js, new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String resultado) {
+                if (activityDestroyed || idDaPagina != navigationId) return;
+
+                if ("true".equals(resultado)) {
+                    fitClicado = true;
+                    // Espera 800ms para o clique em "Ajustar à página" terminar de encaixar o gráfico e revela!
+                    handler.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!activityDestroyed && idDaPagina == navigationId) {
+                                esconderCortinaCarregamento();
+                            }
+                        }
+                    }, 800L);
+                } else if (cssAttempts >= 2) {
+                    // Em links reportEmbed que já vêm ajustados sem o botão de rodapé, revela na 2ª passagem (~4s)
+                    esconderCortinaCarregamento();
+                }
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // AUTO-LOGIN MICROSOFT (PARA LINKS PRIVADOS)
     // ------------------------------------------------------------------
     private void verificarModoLogin(String url) {
         if (url == null) return;
@@ -525,24 +565,18 @@ public class MainActivity extends Activity {
         if (isLogin != emTelaDeLogin) {
             emTelaDeLogin = isLogin;
             if (emTelaDeLogin) {
-                // Se precisar de login manual/2FA na 1ª vez, mostra o WebView de login na tela
-                if (telaLoadingInicial != null) telaLoadingInicial.setVisibility(View.GONE);
-                webViewCarregando.bringToFront();
-                webViewCarregando.setAlpha(1f);
-
+                esconderCortinaCarregamento();
                 overlayCapturador.setVisibility(View.GONE);
-                webViewCarregando.setFocusable(true);
-                webViewCarregando.setFocusableInTouchMode(true);
-                webViewCarregando.requestFocus();
+                webView.setFocusable(true);
+                webView.setFocusableInTouchMode(true);
+                webView.requestFocus();
 
-                bannerStatus.bringToFront();
                 bannerStatus.setText("Autenticando no Power BI... (Aperte 3x VOLTAR para Configurações)");
                 bannerStatus.setVisibility(View.VISIBLE);
             } else {
-                webViewCarregando.setFocusable(false);
-                webViewCarregando.setFocusableInTouchMode(false);
+                webView.setFocusable(false);
+                webView.setFocusableInTouchMode(false);
                 overlayCapturador.setVisibility(View.VISIBLE);
-                overlayCapturador.bringToFront();
                 overlayCapturador.requestFocus();
 
                 bannerStatus.setVisibility(View.GONE);
@@ -551,7 +585,7 @@ public class MainActivity extends Activity {
     }
 
     private void agendarAutoLogin(final long idDaPagina) {
-        if (activityDestroyed || webViewCarregando == null) return;
+        if (activityDestroyed || webView == null) return;
         if (usuarioBi.isEmpty() && senhaBi.isEmpty()) return;
 
         if (loginRunnable != null) {
@@ -562,9 +596,9 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 loginRunnable = null;
-                if (activityDestroyed || webViewCarregando == null || idDaPagina != navigationId) return;
+                if (activityDestroyed || webView == null || idDaPagina != navigationId) return;
 
-                executarScriptAutoLogin(webViewCarregando);
+                executarScriptAutoLogin();
 
                 if (emTelaDeLogin) {
                     agendarAutoLogin(idDaPagina);
@@ -575,8 +609,8 @@ public class MainActivity extends Activity {
         handler.postDelayed(loginRunnable, 2000L);
     }
 
-    private void executarScriptAutoLogin(WebView alvo) {
-        if (alvo == null || activityDestroyed) return;
+    private void executarScriptAutoLogin() {
+        if (webView == null || activityDestroyed) return;
 
         final String userJson = JSONObject.quote(usuarioBi);
         final String passJson = JSONObject.quote(senhaBi);
@@ -639,109 +673,20 @@ public class MainActivity extends Activity {
                 "  return 'NONE';" +
                 "})();";
 
-        alvo.evaluateJavascript(js, null);
+        webView.evaluateJavascript(js, null);
     }
 
-    private void agendarProximaTroca(final long idAtual) {
-        if (playlistRunnable != null) {
-            handler.removeCallbacks(playlistRunnable);
-        }
-
-        playlistRunnable = new Runnable() {
-            @Override
-            public void run() {
-                if (activityDestroyed || idAtual != navigationId || emTelaDeLogin) return;
-
-                if (playlistLinks.size() == 1) {
-                    // Com 1 link, tenta atualizar os dados sem recarregar a página;
-                    // se não tiver botão interno, carrega no WebView oculto e faz crossfade!
-                    atualizarRelatorioUnicoSemPiscar();
-                } else if (!playlistLinks.isEmpty()) {
-                    currentIndex = (currentIndex + 1) % playlistLinks.size();
-                    iniciarCarregamentoEmSegundoPlano();
-                }
-            }
-        };
-
-        handler.postDelayed(playlistRunnable, intervaloMs);
-    }
-
-    private void atualizarRelatorioUnicoSemPiscar() {
-        if (webViewVisivel == null || activityDestroyed) return;
-
-        String jsRefresh =
-                "(function() {" +
-                "  var btns = document.querySelectorAll('button, [role=\"button\"]');" +
-                "  for (var i = 0; i < btns.length; i++) {" +
-                "    var t = ((btns[i].getAttribute('title') || '') + ' ' + (btns[i].getAttribute('aria-label') || '')).toLowerCase();" +
-                "    if (t.indexOf('atualizar') >= 0 || t.indexOf('refresh') >= 0) {" +
-                "      btns[i].click();" +
-                "      return true;" +
-                "    }" +
-                "  }" +
-                "  return false;" +
-                "})();";
-
-        webViewVisivel.evaluateJavascript(jsRefresh, new ValueCallback<String>() {
-            @Override
-            public void onReceiveValue(String clicouRefresh) {
-                if ("true".equals(clicouRefresh)) {
-                    agendarProximaTroca(navigationId);
-                } else {
-                    // Carrega a nova versão no WebView oculto enquanto mantém o atual congelado na tela!
-                    iniciarCarregamentoEmSegundoPlano();
-                }
-            }
-        });
-    }
-
-    private void tratarFalhaDeCarregamento() {
-        if (activityDestroyed || pageLoaded || webViewCarregando == null
-                || retryRunnable != null || retryCount >= MAX_RETRIES) return;
-
-        final long idDaFalha = navigationId;
-        retryCount++;
-
-        retryRunnable = new Runnable() {
-            @Override
-            public void run() {
-                retryRunnable = null;
-                if (activityDestroyed || webViewCarregando == null
-                        || idDaFalha != navigationId || pageLoaded) return;
-
-                webViewCarregando.loadUrl(playlistLinks.get(currentIndex));
-            }
-        };
-
-        handler.postDelayed(retryRunnable, RETRY_DELAY_MS);
-    }
-
-    private void injetarViewportVirtual(WebView alvo) {
-        if (alvo == null || activityDestroyed || emTelaDeLogin) return;
-
-        String js =
-                "(function(){" +
-                "  var m = document.querySelector('meta[name=viewport]');" +
-                "  if (!m) {" +
-                "    m = document.createElement('meta');" +
-                "    m.name = 'viewport';" +
-                "    if (document.head) document.head.appendChild(m);" +
-                "  }" +
-                "  m.setAttribute('content', 'width=" + LARGURA_VIRTUAL + ", initial-scale=1');" +
-                "  window.dispatchEvent(new Event('resize'));" +
-                "})();";
-
-        alvo.evaluateJavascript(js, null);
-    }
-
+    // ------------------------------------------------------------------
+    // CANCELAMENTO E CONTROLE REMOTO
+    // ------------------------------------------------------------------
     private void cancelarTarefasDePagina() {
         if (retryRunnable != null) {
             handler.removeCallbacks(retryRunnable);
             retryRunnable = null;
         }
-        if (checkReadyRunnable != null) {
-            handler.removeCallbacks(checkReadyRunnable);
-            checkReadyRunnable = null;
+        if (cssRunnable != null) {
+            handler.removeCallbacks(cssRunnable);
+            cssRunnable = null;
         }
         if (loginRunnable != null) {
             handler.removeCallbacks(loginRunnable);
@@ -840,7 +785,7 @@ public class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus && !activityDestroyed) {
+        if (hasFocus && !activityDestroyed && webView != null) {
             ocultarBarrasSistema();
             if (!emTelaDeLogin && overlayCapturador != null) {
                 overlayCapturador.requestFocus();
@@ -851,22 +796,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (!activityDestroyed) {
+        if (!activityDestroyed && webView != null) {
             ocultarBarrasSistema();
             if (!emTelaDeLogin && overlayCapturador != null) {
                 overlayCapturador.requestFocus();
             }
-        }
-    }
-
-    private void destruirWebViewSeguro(WebView wv) {
-        if (wv != null) {
-            wv.stopLoading();
-            wv.setWebViewClient(new WebViewClient());
-            wv.loadUrl("about:blank");
-            wv.clearHistory();
-            wv.removeAllViews();
-            wv.destroy();
         }
     }
 
@@ -875,12 +809,15 @@ public class MainActivity extends Activity {
         activityDestroyed = true;
         cancelarTodasAsTarefas();
         handler.removeCallbacksAndMessages(null);
-        destruirWebViewSeguro(webViewA);
-        destruirWebViewSeguro(webViewB);
-        webViewA = null;
-        webViewB = null;
-        webViewVisivel = null;
-        webViewCarregando = null;
+        if (webView != null) {
+            webView.stopLoading();
+            webView.setWebViewClient(new WebViewClient());
+            webView.loadUrl("about:blank");
+            webView.clearHistory();
+            webView.removeAllViews();
+            webView.destroy();
+            webView = null;
+        }
         super.onDestroy();
     }
 
