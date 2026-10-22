@@ -5,6 +5,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.net.Uri;
+import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -16,6 +18,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -141,11 +144,45 @@ public class MainActivity extends Activity {
                 String limpo = link.trim();
                 if (limpo.isEmpty()) continue;
 
+                // Aceita https:// (Power BI e outros) e http:// (páginas locais em rede privada)
                 String urlLower = limpo.toLowerCase(Locale.ROOT);
                 if (urlLower.startsWith("https://") || urlLower.startsWith("http://")) {
                     playlistLinks.add(limpo);
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // IDENTIFICAÇÃO DE TIPO DE LINK
+    // ------------------------------------------------------------------------------------------
+
+    /** True se a URL é do Power BI (o ajuste visual/CSS só deve rodar nesses links). */
+    private boolean ehUrlPowerBi(String url) {
+        if (url == null) return false;
+        String u = url.toLowerCase(Locale.ROOT);
+        return u.contains("powerbi.com")
+                || u.contains("powerbigov")
+                || u.contains("powerbi.cn");
+    }
+
+    /** True se o host é de rede privada / local (usado para aceitar certificado autoassinado). */
+    private boolean ehHostLocal(String url) {
+        try {
+            if (url == null) return false;
+            String host = Uri.parse(url).getHost();
+            if (host == null) return false;
+            host = host.toLowerCase(Locale.ROOT);
+            return host.equals("localhost")
+                    || host.startsWith("127.")
+                    || host.startsWith("10.")
+                    || host.startsWith("192.168.")
+                    || host.matches("^172\\.(1[6-9]|2\\d|3[01])\\..*")
+                    || host.endsWith(".local")
+                    || host.endsWith(".lan")
+                    || host.endsWith(".intranet");
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -181,6 +218,12 @@ public class MainActivity extends Activity {
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
+
+        // Páginas locais (http://) podem carregar recursos http e https misturados
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+        settings.setAllowFileAccess(false);
 
         settings.setUserAgentString(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -334,6 +377,18 @@ public class MainActivity extends Activity {
                 tratarFalha(view);
             }
         }
+
+        // Certificado HTTPS autoassinado: só aceita em hosts de rede privada.
+        // Para Power BI / Microsoft e qualquer host público, a validação continua normal.
+        @Override
+        public void onReceivedSslError(WebView view, SslErrorHandler sslHandler, SslError error) {
+            String url = (error != null) ? error.getUrl() : null;
+            if (ehHostLocal(url)) {
+                sslHandler.proceed();
+            } else {
+                sslHandler.cancel();
+            }
+        }
     }
 
     private void tratarFalha(WebView view) {
@@ -410,6 +465,11 @@ public class MainActivity extends Activity {
 
     private void executarScriptAutoLogin() {
         if (webView == null || activityDestroyed) return;
+
+        // Auto login só faz sentido em páginas de login Microsoft ou do Power BI.
+        // Em páginas locais (http://) não injeta nada, para não mexer no formulário delas.
+        String urlAtual = webView.getUrl();
+        if (!ehUrlLogin(urlAtual) && !ehUrlPowerBi(urlAtual)) return;
 
         final String userJson = JSONObject.quote(usuarioBi);
         final String passJson = JSONObject.quote(senhaBi);
@@ -527,6 +587,13 @@ public class MainActivity extends Activity {
 
     private void atualizarRelatorioUnicoOuRecarregar() {
         if (webView == null || activityDestroyed) return;
+
+        // Página local (http://): não tem botão de atualizar do Power BI,
+        // então recarrega atrás e troca (sem piscar).
+        if (!ehUrlPowerBi(webView.getUrl())) {
+            iniciarPreload(currentIndex);
+            return;
+        }
 
         String jsRefresh =
                 "(function() {" +
@@ -712,10 +779,12 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------------------------------
     // AJUSTE VISUAL (viewport, CSS, "Ajustar à página") — recebe o WebView alvo
+    // Só é aplicado em links do Power BI; páginas locais (http://) ficam intactas.
     // ------------------------------------------------------------------------------------------
 
     private void injetarViewportVirtual(WebView alvo) {
         if (alvo == null || activityDestroyed) return;
+        if (!ehUrlPowerBi(alvo.getUrl())) return;
 
         String js =
                 "(function(){" +
@@ -734,6 +803,7 @@ public class MainActivity extends Activity {
 
     private void agendarAjusteVisual(final WebView alvo, final long idDaPagina) {
         if (activityDestroyed || alvo == null) return;
+        if (!ehUrlPowerBi(alvo.getUrl())) return;
 
         if (cssRunnable != null) {
             handler.removeCallbacks(cssRunnable);
@@ -759,6 +829,7 @@ public class MainActivity extends Activity {
 
     private void aplicarEstiloEClicarEmAjustar(WebView alvo) {
         if (alvo == null || activityDestroyed) return;
+        if (!ehUrlPowerBi(alvo.getUrl())) return;
 
         final String deveClicar = fitClicado ? "false" : "true";
 
