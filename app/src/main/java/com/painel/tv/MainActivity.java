@@ -362,6 +362,7 @@ public class MainActivity extends Activity {
                 if (playlistRunnable != null) {
                     handler.removeCallbacks(playlistRunnable);
                 }
+                agendarAjusteVisual(webView, navigationId);
                 agendarAutoLogin(navigationId);
             } else {
                 injetarViewportVirtual(webView);
@@ -824,7 +825,10 @@ public class MainActivity extends Activity {
 
     private void agendarAjusteVisual(final WebView alvo, final long idDaPagina) {
         if (activityDestroyed || alvo == null) return;
-        if (!ehUrlPowerBi(alvo.getUrl())) return;
+        if (!ehUrlPowerBi(alvo.getUrl())) {
+            agendarAjusteGenerico(alvo, idDaPagina);
+            return;
+        }
 
         if (cssRunnable != null) {
             handler.removeCallbacks(cssRunnable);
@@ -846,6 +850,50 @@ public class MainActivity extends Activity {
         };
 
         handler.postDelayed(cssRunnable, CSS_DELAY_MS);
+    }
+
+    /** Páginas que NÃO são Power BI: reduz o zoom só se o conteúdo for maior que a tela. */
+    private void agendarAjusteGenerico(final WebView alvo, final long idDaPagina) {
+        if (activityDestroyed || alvo == null) return;
+
+        if (cssRunnable != null) {
+            handler.removeCallbacks(cssRunnable);
+        }
+
+        cssRunnable = new Runnable() {
+            @Override
+            public void run() {
+                cssRunnable = null;
+                if (activityDestroyed || idDaPagina != navigationId || !pageLoaded) return;
+
+                ajustarPaginaGenerica(alvo);
+
+                cssAttempts++;
+                if (cssAttempts < MAX_CSS_ATTEMPTS) {
+                    agendarAjusteGenerico(alvo, idDaPagina);
+                }
+            }
+        };
+
+        handler.postDelayed(cssRunnable, CSS_DELAY_MS);
+    }
+
+    private void ajustarPaginaGenerica(WebView alvo) {
+        if (alvo == null || activityDestroyed) return;
+
+        String js =
+                "(function() {" +
+                "  var de = document.documentElement, b = document.body;" +
+                "  if (!de || !b) return 'NOBODY';" +
+                "  de.style.zoom = '1';" +
+                "  var w = Math.max(de.scrollWidth, b.scrollWidth);" +
+                "  var h = Math.max(de.scrollHeight, b.scrollHeight);" +
+                "  var s = Math.min(window.innerWidth / w, window.innerHeight / h);" +
+                "  if (s < 0.98) { de.style.zoom = Math.max(s, 0.5); }" +
+                "  return s;" +
+                "})();";
+
+        alvo.evaluateJavascript(js, null);
     }
 
     private void aplicarEstiloEClicarEmAjustar(WebView alvo) {
