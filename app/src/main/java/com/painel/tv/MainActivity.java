@@ -107,6 +107,10 @@ public class MainActivity extends Activity {
         carregarConfiguracoes();
         modoManual = getIntent().getBooleanExtra("modoManual", false);
 
+        ServidorConfig.iniciar(this);
+        Toast.makeText(this, "Configurar pelo celular: http://" + ServidorConfig.obterIp()
+                + ":" + ServidorConfig.PORTA, Toast.LENGTH_LONG).show();
+
         if (playlistLinks.isEmpty()) {
             abrirConfiguracoes();
             return;
@@ -998,8 +1002,13 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             CookieManager.getInstance().flush();
         }
-        startActivity(new Intent(this, MainActivity.class));
-        finish();
+        reiniciarPainel();
+    }
+
+    /** Recria a tela lendo a configuração salva (MainActivity é singleTask). */
+    private void reiniciarPainel() {
+        getIntent().removeExtra("modoManual");
+        recreate();
     }
 
     private void abrirConfiguracoes() {
@@ -1107,12 +1116,24 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        ServidorConfig.definirOuvinte(new Runnable() {
+            @Override
+            public void run() {
+                if (!activityDestroyed) reiniciarPainel();
+            }
+        });
         if (!activityDestroyed && webView != null) {
             ocultarBarrasSistema();
             if (!emTelaDeLogin && overlayCapturador != null) {
                 overlayCapturador.requestFocus();
             }
         }
+    }
+
+    @Override
+    protected void onPause() {
+        ServidorConfig.definirOuvinte(null);
+        super.onPause();
     }
 
     private void destruirWebView(WebView wv) {

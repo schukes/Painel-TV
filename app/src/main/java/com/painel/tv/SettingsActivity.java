@@ -70,7 +70,6 @@ public class SettingsActivity extends Activity {
     private Button btnConfigTv;
     private Button btnSairTv;
 
-    private ServidorLocal servidor;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,17 +81,19 @@ public class SettingsActivity extends Activity {
 
         LinearLayout raiz = new LinearLayout(this);
         raiz.setOrientation(LinearLayout.VERTICAL);
-        raiz.setPadding(80, 40, 80, 60);
+        raiz.setPadding(80, 70, 80, 70);
         raiz.setBackgroundColor(Color.parseColor("#141923"));
         raiz.setClipToPadding(false);
         raiz.setClipChildren(false);
 
         raiz.addView(criarTexto("Configuração do Painel TV", 26, Color.WHITE));
 
-        TextView info = criarTexto(
-                "📱 Configurar pelo celular (mesmo Wi-Fi): acesse http://" + obterIp() + ":" + PORTA,
-                16, Color.parseColor("#7FD1FF"));
-        raiz.addView(info);
+        raiz.addView(criarTexto("📱 Configurar pelo celular (mesmo Wi-Fi), acesse:",
+                16, Color.parseColor("#7FD1FF")));
+        TextView endereco = criarTexto("http://" + ServidorConfig.obterIp() + ":" + ServidorConfig.PORTA,
+                24, Color.WHITE);
+        endereco.setTypeface(null, android.graphics.Typeface.BOLD);
+        raiz.addView(endereco);
 
         txtStatusPermissao = criarTexto("", 15, Color.YELLOW);
         raiz.addView(txtStatusPermissao);
@@ -234,8 +235,7 @@ public class SettingsActivity extends Activity {
             }
         });
 
-        servidor = new ServidorLocal();
-        servidor.start();
+        ServidorConfig.iniciar(this);
     }
 
     private void configurarOrdemDeNavegacao() {
@@ -412,14 +412,21 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        ServidorConfig.definirOuvinte(new Runnable() {
+            @Override
+            public void run() {
+                startActivity(new Intent(SettingsActivity.this, MainActivity.class));
+                finish();
+            }
+        });
         atualizarStatusPermissao();
         atualizarTextoBotaoLauncher();
     }
 
     @Override
-    protected void onDestroy() {
-        if (servidor != null) servidor.parar();
-        super.onDestroy();
+    protected void onPause() {
+        ServidorConfig.definirOuvinte(null);
+        super.onPause();
     }
 
     @Override
@@ -625,165 +632,4 @@ public class SettingsActivity extends Activity {
         return tv;
     }
 
-    private String obterIp() {
-        try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            while (interfaces.hasMoreElements()) {
-                NetworkInterface ni = interfaces.nextElement();
-                Enumeration<InetAddress> enderecos = ni.getInetAddresses();
-                while (enderecos.hasMoreElements()) {
-                    InetAddress ip = enderecos.nextElement();
-                    if (!ip.isLoopbackAddress() && ip instanceof Inet4Address) {
-                        return ip.getHostAddress();
-                    }
-                }
-            }
-        } catch (Exception ignored) { }
-        return "IP-DA-TV";
-    }
-
-    private static String escaparHtml(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
-    }
-
-    // ------------------------------------------------------------------
-    // MINI SERVIDOR WEB (configurar pelo celular com Login e Senha)
-    // ------------------------------------------------------------------
-    private class ServidorLocal extends Thread {
-        private ServerSocket serverSocket;
-        private volatile boolean rodando = true;
-
-        void parar() {
-            rodando = false;
-            try {
-                if (serverSocket != null) serverSocket.close();
-            } catch (IOException ignored) { }
-        }
-
-        @Override
-        public void run() {
-            try {
-                serverSocket = new ServerSocket(PORTA);
-                while (rodando) {
-                    Socket cliente = serverSocket.accept();
-                    try {
-                        atender(cliente);
-                    } catch (Exception ignored) { }
-                    try { cliente.close(); } catch (IOException ignored) { }
-                }
-            } catch (IOException ignored) { }
-        }
-
-        private void atender(Socket cliente) throws IOException {
-            cliente.setSoTimeout(5000);
-            BufferedReader entrada = new BufferedReader(
-                    new InputStreamReader(cliente.getInputStream(), "UTF-8"));
-
-            String requisicao = entrada.readLine();
-            if (requisicao == null) return;
-
-            int tamanhoCorpo = 0;
-            String linha;
-            while ((linha = entrada.readLine()) != null && !linha.isEmpty()) {
-                if (linha.toLowerCase().startsWith("content-length:")) {
-                    tamanhoCorpo = Integer.parseInt(linha.substring(15).trim());
-                }
-            }
-
-            String html;
-
-            if (requisicao.startsWith("POST")) {
-                char[] buffer = new char[tamanhoCorpo];
-                int lido = 0;
-                while (lido < tamanhoCorpo) {
-                    int n = entrada.read(buffer, lido, tamanhoCorpo - lido);
-                    if (n < 0) break;
-                    lido += n;
-                }
-                String corpo = new String(buffer, 0, lido);
-
-                String links = "";
-                String tempo = String.valueOf(TEMPO_PADRAO);
-                String delay = String.valueOf(DELAY_PADRAO);
-                String usuario = "";
-                String senha = "";
-
-                for (String par : corpo.split("&")) {
-                    String[] kv = par.split("=", 2);
-                    if (kv.length < 2) continue;
-                    String valor = URLDecoder.decode(kv[1], "UTF-8");
-                    if (kv[0].equals("links")) links = valor;
-                    if (kv[0].equals("tempo")) tempo = valor;
-                    if (kv[0].equals("delay")) delay = valor;
-                    if (kv[0].equals("usuario")) usuario = valor;
-                    if (kv[0].equals("senha")) senha = valor;
-                }
-
-                final String linksFinal = links.trim();
-                final String tempoFinal = tempo.trim();
-                final String delayFinal = delay.trim();
-                final String usuarioFinal = usuario.trim();
-                final String senhaFinal = senha;
-
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        edLinks.setText(linksFinal);
-                        edTempo.setText(tempoFinal);
-                        edDelay.setText(delayFinal);
-                        edUsuario.setText(usuarioFinal);
-                        edSenha.setText(senhaFinal);
-                        salvarEIniciar();
-                    }
-                });
-
-                html = montarPagina("Enviado! A TV vai fazer login e iniciar o painel.",
-                        linksFinal, tempoFinal, delayFinal, usuarioFinal, senhaFinal);
-            } else {
-                SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-                html = montarPagina("",
-                        p.getString("links", ""),
-                        String.valueOf(p.getInt("tempo", TEMPO_PADRAO)),
-                        String.valueOf(p.getInt("delay", DELAY_PADRAO)),
-                        p.getString("usuario", ""),
-                        p.getString("senha", ""));
-            }
-
-            byte[] bytes = html.getBytes("UTF-8");
-            OutputStream saida = cliente.getOutputStream();
-            String cabecalho = "HTTP/1.1 200 OK\r\n"
-                    + "Content-Type: text/html; charset=utf-8\r\n"
-                    + "Content-Length: " + bytes.length + "\r\n"
-                    + "Connection: close\r\n\r\n";
-            saida.write(cabecalho.getBytes("UTF-8"));
-            saida.write(bytes);
-            saida.flush();
-        }
-
-        private String montarPagina(String mensagem, String links, String tempo, String delay,
-                                    String usuario, String senha) {
-            return "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                    + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                    + "<title>Painel TV</title></head>"
-                    + "<body style='font-family:sans-serif;padding:16px;background:#141923;color:#fff'>"
-                    + "<h2>Painel TV - Power BI</h2>"
-                    + "<p style='color:#81C784;font-weight:bold'>" + mensagem + "</p>"
-                    + "<form method='post' action='/salvar'>"
-                    + "<p>Links do Power BI (um por linha):</p>"
-                    + "<textarea name='links' rows='6' style='width:100%;padding:8px'>" + escaparHtml(links) + "</textarea>"
-                    + "<p>Tempo por painel (segundos):</p>"
-                    + "<input name='tempo' type='number' style='width:100%;padding:8px' value='" + escaparHtml(tempo) + "'>"
-                    + "<p>Delay de carregamento (segundos, 0 a " + DELAY_MAX + "):</p>"
-                    + "<input name='delay' type='number' min='" + DELAY_MIN + "' max='" + DELAY_MAX + "' style='width:100%;padding:8px' value='" + escaparHtml(delay) + "'>"
-                    + "<h3>Login Microsoft / Power BI (para links privados)</h3>"
-                    + "<p>E-mail corporativo:</p>"
-                    + "<input name='usuario' type='email' style='width:100%;padding:8px' value='" + escaparHtml(usuario) + "'>"
-                    + "<p>Senha:</p>"
-                    + "<input name='senha' type='password' style='width:100%;padding:8px' value='" + escaparHtml(senha) + "'>"
-                    + "<p style='margin-top:20px'><button type='submit' style='width:100%;padding:14px;font-size:18px;background:#2E7D32;color:#fff;border:none;border-radius:8px'>"
-                    + "Salvar e Iniciar na TV</button></p>"
-                    + "</form></body></html>";
-        }
-    }
 }
