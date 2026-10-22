@@ -38,6 +38,8 @@ import java.util.Locale;
 public class MainActivity extends Activity {
 
     private static final String PREFS_NAME = "PainelPrefs";
+    private static final String TEXTO_BANNER_MANUAL =
+            "LOGIN MANUAL: use setas/OK/teclado | MENU ou CH+ = próximo link | VOLTAR 3x = concluir e bloquear";
 
     private static final int DEFAULT_INTERVAL_SECONDS = 30;
     private static final int MIN_INTERVAL_SECONDS = 10;
@@ -84,6 +86,7 @@ public class MainActivity extends Activity {
     private boolean pageLoaded = false;
     private boolean fitClicado = false;
     private boolean emTelaDeLogin = false;
+    private boolean modoManual = false; // login manual: teclado/controle livres no navegador
 
     private int backPressCount = 0;
     private long lastBackPressTime = 0L;
@@ -102,6 +105,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         carregarConfiguracoes();
+        modoManual = getIntent().getBooleanExtra("modoManual", false);
 
         if (playlistLinks.isEmpty()) {
             abrirConfiguracoes();
@@ -282,6 +286,16 @@ public class MainActivity extends Activity {
         setContentView(container);
         overlayCapturador.requestFocus();
 
+        if (modoManual) {
+            emTelaDeLogin = true;
+            overlayCapturador.setVisibility(View.GONE);
+            webView.setFocusable(true);
+            webView.setFocusableInTouchMode(true);
+            webView.requestFocus();
+            bannerStatus.setText(TEXTO_BANNER_MANUAL);
+            bannerStatus.setVisibility(View.VISIBLE);
+        }
+
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -421,7 +435,7 @@ public class MainActivity extends Activity {
 
     private void verificarModoLogin(String url) {
         if (url == null) return;
-        boolean isLogin = ehUrlLogin(url);
+        boolean isLogin = modoManual || ehUrlLogin(url);
 
         if (isLogin != emTelaDeLogin) {
             emTelaDeLogin = isLogin;
@@ -431,7 +445,8 @@ public class MainActivity extends Activity {
                 webView.setFocusableInTouchMode(true);
                 webView.requestFocus();
 
-                bannerStatus.setText("Autenticando no Power BI... (Aperte 3x VOLTAR para Configurações)");
+                bannerStatus.setText(modoManual ? TEXTO_BANNER_MANUAL
+                        : "Autenticando no Power BI... (Aperte 3x VOLTAR para Configurações)");
                 bannerStatus.setVisibility(View.VISIBLE);
             } else {
                 webView.setFocusable(false);
@@ -445,7 +460,7 @@ public class MainActivity extends Activity {
     }
 
     private void agendarAutoLogin(final long idDaPagina) {
-        if (activityDestroyed || webView == null) return;
+        if (activityDestroyed || webView == null || modoManual) return;
         if (usuarioBi.isEmpty() && senhaBi.isEmpty()) return;
 
         if (loginRunnable != null) {
@@ -470,7 +485,7 @@ public class MainActivity extends Activity {
     }
 
     private void executarScriptAutoLogin() {
-        if (webView == null || activityDestroyed) return;
+        if (webView == null || activityDestroyed || modoManual) return;
 
         // Auto login só faz sentido em páginas de login Microsoft ou do Power BI.
         // Em páginas locais (http://) não injeta nada, para não mexer no formulário delas.
@@ -919,6 +934,26 @@ public class MainActivity extends Activity {
         cancelarTarefasDePagina();
     }
 
+    /** Modo manual: carrega o próximo link da lista para fazer login nele também. */
+    private void proximoLinkManual() {
+        if (activityDestroyed || webView == null || playlistLinks.isEmpty()) return;
+        cancelarTodasAsTarefas();
+        navigationId++;
+        currentIndex = (currentIndex + 1) % playlistLinks.size();
+        targetIndex = currentIndex;
+        webView.loadUrl(playlistLinks.get(currentIndex));
+        Toast.makeText(this, "Link " + (currentIndex + 1) + " de " + playlistLinks.size(), Toast.LENGTH_SHORT).show();
+    }
+
+    /** Modo manual: salva a sessão (cookies) e reinicia o painel bloqueado. */
+    private void concluirModoManual() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            CookieManager.getInstance().flush();
+        }
+        startActivity(new Intent(this, MainActivity.class));
+        finish();
+    }
+
     private void abrirConfiguracoes() {
         Intent intent = new Intent(this, SettingsActivity.class);
         startActivity(intent);
@@ -928,10 +963,17 @@ public class MainActivity extends Activity {
     private boolean processarTeclaControle(int tecla, KeyEvent event) {
         if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
 
+        // Modo manual: MENU / CH+ = próximo link; VOLTAR 3x = concluir e bloquear
+        if (modoManual
+                && (tecla == KeyEvent.KEYCODE_MENU || tecla == KeyEvent.KEYCODE_CHANNEL_UP)) {
+            proximoLinkManual();
+            return true;
+        }
+
         // 1) Botão Voltar 3 vezes seguidas abre as configurações SEMPRE (mesmo em tela de login)
         if (tecla == KeyEvent.KEYCODE_BACK) {
             if (event.getRepeatCount() > 0) {
-                abrirConfiguracoes();
+                if (modoManual) concluirModoManual(); else abrirConfiguracoes();
                 return true;
             }
             long agora = SystemClock.uptimeMillis();
@@ -944,9 +986,10 @@ public class MainActivity extends Activity {
 
             if (backPressCount >= 3) {
                 backPressCount = 0;
-                abrirConfiguracoes();
+                if (modoManual) concluirModoManual(); else abrirConfiguracoes();
             } else {
-                Toast.makeText(this, "Aperte VOLTAR mais " + (3 - backPressCount) + "x para Configurações", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Aperte VOLTAR mais " + (3 - backPressCount) + "x para "
+                        + (modoManual ? "concluir o login" : "Configurações"), Toast.LENGTH_SHORT).show();
             }
             return true;
         }

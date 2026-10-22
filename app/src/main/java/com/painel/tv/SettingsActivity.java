@@ -64,6 +64,7 @@ public class SettingsActivity extends Activity {
 
     private Button btnSalvar;
     private Button btnLimparSessao;
+    private Button btnLoginManual;
     private Button btnPermissao;
     private Button btnToggleLauncher;
     private Button btnConfigTv;
@@ -166,6 +167,16 @@ public class SettingsActivity extends Activity {
         });
         raiz.addView(btnLimparSessao);
 
+        // ---- 5.1 Login manual (digitar usuário/senha direto no navegador) ----
+        btnLoginManual = criarBotaoTV("Login Manual (digitar no navegador)", "#00838F", "#00ACC1");
+        btnLoginManual.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                salvarEIniciar(true);
+            }
+        });
+        raiz.addView(btnLoginManual);
+
         // ---- Seção de Inicialização e Modo Launcher ----
         raiz.addView(criarTexto("Opções do Sistema e Launcher da TV:", 18, Color.parseColor("#7FD1FF")));
 
@@ -236,6 +247,7 @@ public class SettingsActivity extends Activity {
                 edSenha,
                 btnSalvar,
                 btnLimparSessao,
+                btnLoginManual,
                 btnPermissao,
                 btnToggleLauncher,
                 btnConfigTv,
@@ -425,6 +437,10 @@ public class SettingsActivity extends Activity {
     // SALVAR E SESSÃO
     // ------------------------------------------------------------------
     private void salvarEIniciar() {
+        salvarEIniciar(false);
+    }
+
+    private void salvarEIniciar(boolean manual) {
         String links = edLinks.getText().toString().trim();
         String usuario = edUsuario.getText().toString().trim();
         String senha = edSenha.getText().toString(); // Sem trim para não cortar espaços se houver na senha
@@ -459,7 +475,9 @@ public class SettingsActivity extends Activity {
                 .putString("senha", senha)
                 .apply();
 
-        startActivity(new Intent(this, MainActivity.class));
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.putExtra("modoManual", manual);
+        startActivity(intent);
         finish();
     }
 
