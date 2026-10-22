@@ -1,11 +1,14 @@
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.painel.tv">
+
+    <!-- Permissões -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Permite listar o Launcher original da TV no Android 11+ para poder sair do modo quiosque -->
+    <!-- Permite localizar o Launcher original da TV no Android 11+ -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -13,73 +16,89 @@
         </intent>
     </queries>
 
-    <uses-feature android:name="android.software.leanback" android:required="false" />
-    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <!-- Compatibilidade com Android TV / Google TV -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
 
     <application
         android:allowBackup="true"
         android:label="Painel TV"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
-        <!-- Tela Principal do Painel -->
+        <!-- Tela principal do painel -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden">
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+
         </activity>
 
-        <!-- Alias que transforma o app em LAUNCHER da TV (pode ser ligado/desligado pelo botão no app) -->
+        <!-- Launcher opcional para o modo quiosque -->
         <activity-alias
             android:name=".HomeLauncherAlias"
             android:targetActivity=".MainActivity"
             android:label="Painel TV (Modo Launcher)"
             android:enabled="false"
             android:exported="true">
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+
         </activity-alias>
 
-        <!-- Tela de Configurações -->
+        <!-- Tela de configurações -->
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
-        <!-- Ícone secundário para abrir direto as Configurações -->
+        <!-- Atalho para abrir as configurações -->
         <activity-alias
             android:name=".ConfigurarAlias"
             android:targetActivity=".SettingsActivity"
             android:label="Painel TV - Configurar"
             android:exported="true">
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+
         </activity-alias>
 
-        <!-- Receptor de Boot -->
+        <!-- Inicialização automática após ligar a TV -->
         <receiver
             android:name=".BootReceiver"
             android:exported="true"
             android:directBootAware="true">
+
             <intent-filter android:priority="999">
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+
         </receiver>
 
     </application>
+
 </manifest>
