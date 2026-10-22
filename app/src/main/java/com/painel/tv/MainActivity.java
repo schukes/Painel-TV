@@ -365,9 +365,13 @@ public class MainActivity extends Activity {
         public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
             super.onReceivedError(view, request, error);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
-                tratarFalha(view);
-            }
-        }
+            android.util.Log.e("PainelTV",
+                "URL: " + request.getUrl()
+                + " | Código: " + error.getErrorCode()
+                + " | Erro: " + error.getDescription());
+        tratarFalha(view);
+    }
+}
 
         @SuppressWarnings("deprecation")
         @Override
