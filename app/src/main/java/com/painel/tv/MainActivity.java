@@ -251,7 +251,7 @@ public class MainActivity extends Activity {
         overlayCapturador.setFocusable(true);
         overlayCapturador.setFocusableInTouchMode(true);
         overlayCapturador.setVisibility(View.GONE);
-        
+
         overlayCapturador.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
