@@ -250,6 +250,8 @@ public class MainActivity extends Activity {
         overlayCapturador.setBackgroundColor(Color.TRANSPARENT);
         overlayCapturador.setFocusable(true);
         overlayCapturador.setFocusableInTouchMode(true);
+        overlayCapturador.setVisibility(View.GONE);
+        
         overlayCapturador.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
